@@ -149,6 +149,21 @@ body { font-family: 'Work Sans', sans-serif; color: var(--ink); }
 <div id="root"><div class="loading">Chargement…</div></div>
 
 <script>
+// Show a readable message instead of staying stuck if something fails to load or run.
+window.addEventListener("error", function (e) {
+  var root = document.getElementById("root");
+  if (root && root.innerHTML.indexOf("Chargement") !== -1) {
+    var msg = (e && (e.message || (e.error && e.error.message))) || "Erreur inconnue";
+    root.innerHTML = '<div style="padding:24px;font-family:sans-serif;color:#A6403A;white-space:pre-wrap;line-height:1.5;">Erreur au chargement :\n' + msg + '\n\nSource : ' + (e.filename || "?") + " (ligne " + (e.lineno || "?") + ")</div>";
+  }
+}, true);
+setTimeout(function () {
+  var root = document.getElementById("root");
+  if (root && root.innerHTML.indexOf("Chargement") !== -1) {
+    root.innerHTML = '<div style="padding:24px;font-family:sans-serif;color:#22281F;line-height:1.6;">L\'application met trop de temps à démarrer.<br><br>Vérifie ta connexion internet (le premier chargement a besoin d\'internet pour récupérer React et les polices), puis recharge la page.<br><br>Si ça persiste, ton réseau bloque peut-être unpkg.com — essaie avec un autre réseau (WiFi ↔ 4G/5G) pour vérifier.</div>';
+  }
+}, 9000);
+
 // localStorage-backed shim matching the same async key/value API used by the app.
 window.storage = {
   async get(key) {
