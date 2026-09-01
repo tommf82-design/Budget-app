@@ -14,9 +14,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
 
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.3/babel.min.js"></script>
 
 <style>
 :root {
@@ -304,6 +304,11 @@ function formatDateFR(iso) { const d = new Date(iso + "T00:00:00"); return d.toL
 function signedAmount(e) { return e.kind === "reimbursement" ? -e.amount : e.amount; }
 function b64EncodeUtf8(str) { return btoa(unescape(encodeURIComponent(str))); }
 function b64DecodeUtf8(str) { return decodeURIComponent(escape(atob(str))); }
+async function sha256Hex(str) {
+  const enc = new TextEncoder().encode(str);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 const DEFAULT_CATEGORIES = [
   { id: "logement", name: "Logement", color: "#3F5B44", subcategories: ["Loyer", "Charges", "Assurance"] },
@@ -1002,10 +1007,12 @@ function RecapTab({ data, categories, year, setYear }) {
 /* Backup / GitHub sync sheet                                              */
 /* ---------------------------------------------------------------------- */
 
-function BackupSheet({ data, onClose, onImport }) {
+function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin }) {
   const fileRef = useRef(null);
   const [importError, setImportError] = useState("");
   const [confirmImport, setConfirmImport] = useState(null);
+  const [showLockSetup, setShowLockSetup] = useState(false);
+  const [confirmDisableLock, setConfirmDisableLock] = useState(false);
   const [gh, setGh] = useState({ token: "", repo: "", path: "carnet-data.json", branch: "main" });
   useEffect(() => {
     (async () => {
@@ -1119,7 +1126,110 @@ function BackupSheet({ data, onClose, onImport }) {
           </div>
         </div>
       )}
+
+      <div style={{ height: 1, background: "var(--line)", margin: "4px 0" }} />
+
+      <div>
+        <div className="field-label" style={{ marginBottom: 8 }}>Verrouillage</div>
+        {pinHash ? (
+          <>
+            <div className="hint-line" style={{ marginTop: 0 }}>Un code PIN protège l'ouverture de l'app sur cet appareil.</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="ghost-btn small" style={{ flex: 1, marginTop: 0 }} onClick={() => setShowLockSetup(true)}>Modifier le code</button>
+              <button className="danger-btn" style={{ flex: 1 }} onClick={() => setConfirmDisableLock(true)}>Désactiver</button>
+            </div>
+            {confirmDisableLock && (
+              <div className="danger-zone">
+                <div className="danger-text">Désactiver le verrouillage ? N'importe qui ouvrant l'app y aura accès.</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="ghost-btn small" style={{ flex: 1 }} onClick={() => setConfirmDisableLock(false)}>Annuler</button>
+                  <button className="danger-btn" style={{ flex: 1 }} onClick={() => { onClearPin(); setConfirmDisableLock(false); }}>Confirmer</button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <button className="ghost-btn" onClick={() => setShowLockSetup(true)}>Activer un code PIN</button>
+        )}
+      </div>
+      {showLockSetup && <LockSetupSheet onClose={() => setShowLockSetup(false)} onSet={(hash) => { onSetPin(hash); setShowLockSetup(false); }} />}
     </Sheet>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Local PIN lock (device-only, never sent anywhere)                       */
+/* ---------------------------------------------------------------------- */
+
+function LockSetupSheet({ onClose, onSet }) {
+  const [step, setStep] = useState(1);
+  const [pin, setPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
+  const [error, setError] = useState("");
+
+  function next() {
+    if (pin.length < 4) { setError("4 chiffres minimum."); return; }
+    setError("");
+    setStep(2);
+  }
+  async function finish() {
+    if (confirmPin !== pin) { setError("Les deux codes ne correspondent pas."); setConfirmPin(""); return; }
+    const hash = await sha256Hex(pin);
+    onSet(hash);
+  }
+
+  return (
+    <Sheet title="Code PIN" onClose={onClose}>
+      <div className="empty-hint">Ce code reste uniquement sur ton téléphone, il n'est jamais envoyé nulle part. Il n'y a pas de récupération : si tu l'oublies, il faudra effacer les données du site dans les réglages Safari pour rentrer à nouveau (tu perdras aussi tes données locales, sauf si tu as un export récent).</div>
+      {step === 1 ? (
+        <>
+          <Field label="Nouveau code (4 à 6 chiffres)">
+            <input className="text-input" type="password" inputMode="numeric" pattern="[0-9]*" maxLength={6} autoFocus
+              style={{ textAlign: "center", fontSize: 22, letterSpacing: 8 }}
+              value={pin} onChange={(e) => { setPin(e.target.value.replace(/\D/g, "")); setError(""); }}
+              onKeyDown={(e) => e.key === "Enter" && next()} />
+          </Field>
+          {error && <div className="danger-text">{error}</div>}
+          <button className="primary-btn" onClick={next}>Continuer</button>
+        </>
+      ) : (
+        <>
+          <Field label="Confirme le code">
+            <input className="text-input" type="password" inputMode="numeric" pattern="[0-9]*" maxLength={6} autoFocus
+              style={{ textAlign: "center", fontSize: 22, letterSpacing: 8 }}
+              value={confirmPin} onChange={(e) => { setConfirmPin(e.target.value.replace(/\D/g, "")); setError(""); }}
+              onKeyDown={(e) => e.key === "Enter" && finish()} />
+          </Field>
+          {error && <div className="danger-text">{error}</div>}
+          <button className="primary-btn" onClick={finish}>Activer le verrouillage</button>
+        </>
+      )}
+    </Sheet>
+  );
+}
+
+function LockScreen({ pinHash, onUnlock }) {
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState(false);
+
+  async function submit() {
+    const h = await sha256Hex(pin);
+    if (h === pinHash) onUnlock();
+    else { setError(true); setPin(""); }
+  }
+
+  return (
+    <div className="app-shell" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div style={{ textAlign: "center", padding: 24, width: "100%", maxWidth: 260 }}>
+        <div className="wordmark" style={{ marginBottom: 28 }}>Carnet</div>
+        <input className="text-input" type="password" inputMode="numeric" pattern="[0-9]*" maxLength={6} autoFocus
+          style={{ textAlign: "center", fontSize: 26, letterSpacing: 10 }}
+          value={pin} onChange={(e) => { setPin(e.target.value.replace(/\D/g, "")); setError(false); }}
+          onKeyDown={(e) => e.key === "Enter" && submit()} />
+        {error && <div className="danger-text" style={{ marginTop: 10 }}>Code incorrect.</div>}
+        <button className="primary-btn" style={{ marginTop: 18 }} onClick={submit}>Déverrouiller</button>
+      </div>
+    </div>
   );
 }
 
@@ -1127,7 +1237,7 @@ function BackupSheet({ data, onClose, onImport }) {
 /* App shell                                                               */
 /* ---------------------------------------------------------------------- */
 
-function App() {
+function App({ pinHash, onSetPin, onClearPin }) {
   const [data, persist, ready] = useAppData();
   const [tab, setTab] = useState("budget");
   const [mKey, setMKey] = useState(monthKey(new Date()));
@@ -1181,12 +1291,51 @@ function App() {
         <button className={`tab-btn ${tab === "epargne" ? "active" : ""}`} onClick={() => setTab("epargne")}><PiggyBank size={19} /><span>Épargne</span></button>
         <button className={`tab-btn ${tab === "recap" ? "active" : ""}`} onClick={() => setTab("recap")}><BarChart3 size={19} /><span>Récap</span></button>
       </nav>
-      {showBackup && <BackupSheet data={data} onClose={() => setShowBackup(false)} onImport={handleImport} />}
+      {showBackup && <BackupSheet data={data} onClose={() => setShowBackup(false)} onImport={handleImport} pinHash={pinHash} onSetPin={onSetPin} onClearPin={onClearPin} />}
     </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+function Root() {
+  const [pinHash, setPinHashState] = useState(undefined); // undefined = loading, null = no PIN set
+  const [locked, setLocked] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.storage.get("app-pin-hash");
+        const hash = res ? res.value : null;
+        setPinHashState(hash);
+        setLocked(!!hash);
+      } catch (e) { setPinHashState(null); setLocked(false); }
+    })();
+  }, []);
+
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.visibilityState === "hidden" && pinHash) setLocked(true);
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [pinHash]);
+
+  async function onSetPin(hash) {
+    await window.storage.set("app-pin-hash", hash);
+    setPinHashState(hash);
+    setLocked(false);
+  }
+  async function onClearPin() {
+    await window.storage.delete("app-pin-hash");
+    setPinHashState(null);
+  }
+
+  if (pinHash === undefined) return <div className="app-shell"><div className="loading">Chargement…</div></div>;
+  if (locked && pinHash) return <LockScreen pinHash={pinHash} onUnlock={() => setLocked(false)} />;
+
+  return <App pinHash={pinHash} onSetPin={onSetPin} onClearPin={onClearPin} />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
 </script>
 </body>
 </html>
