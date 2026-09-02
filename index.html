@@ -14,9 +14,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
 
-<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.3/babel.min.js"></script>
+<script src="vendor/react.production.min.js"></script>
+<script src="vendor/react-dom.production.min.js"></script>
+<script src="vendor/babel.min.js"></script>
 
 <style>
 :root {
@@ -137,6 +137,11 @@ body { font-family: 'Work Sans', sans-serif; color: var(--ink); }
 .sync-status.loading { background: var(--line); color: var(--ink-soft); }
 .sync-status.success { background: rgba(63,91,68,0.12); color: var(--forest); }
 .sync-status.error { background: rgba(166,64,58,0.1); color: var(--brick); }
+.autosync-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12.5px; color: var(--ink-soft); cursor: pointer; }
+.autosync-row input { width: 16px; height: 16px; accent-color: var(--forest); }
+.sync-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--forest); color: var(--paper); font-size: 12px; padding: 10px 16px; }
+.sync-banner button { background: rgba(237,234,225,0.15); color: var(--paper); border: none; border-radius: 6px; padding: 6px 10px; font-size: 11.5px; cursor: pointer; font-family: 'Work Sans', sans-serif; }
+.sync-banner button.primary { background: var(--paper); color: var(--forest); font-weight: 600; }
 .bar-chart { display: flex; align-items: flex-end; gap: 4px; }
 .bar-chart-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
 .bar-chart-bars { display: flex; align-items: flex-end; gap: 3px; justify-content: center; width: 100%; }
@@ -309,6 +314,28 @@ async function sha256Hex(str) {
   const buf = await crypto.subtle.digest("SHA-256", enc);
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+function ghApiUrl(gh) {
+  const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
+  if (!owner || !repo) throw new Error("Dépôt invalide (attendu utilisateur/depot)");
+  return `https://api.github.com/repos/${owner}/${repo}/contents/${gh.path}`;
+}
+async function ghGetFile(gh) {
+  if (!gh.token) throw new Error("Ajoute ton token d'accès personnel");
+  const res = await fetch(`${ghApiUrl(gh)}?ref=${gh.branch}`, { headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json" } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Lecture impossible (${res.status})`);
+  const j = await res.json();
+  return { sha: j.sha, data: JSON.parse(b64DecodeUtf8(j.content.replace(/\n/g, ""))) };
+}
+async function ghPutFile(gh, dataObj, sha) {
+  if (!gh.token) throw new Error("Ajoute ton token d'accès personnel");
+  const res = await fetch(ghApiUrl(gh), {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+    body: JSON.stringify({ message: `Carnet — ${new Date().toLocaleString("fr-FR")}`, content: b64EncodeUtf8(JSON.stringify(dataObj, null, 2)), branch: gh.branch, ...(sha ? { sha } : {}) }),
+  });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.message || `Échec de l'envoi (${res.status})`); }
+}
 
 const DEFAULT_CATEGORIES = [
   { id: "logement", name: "Logement", color: "#3F5B44", subcategories: ["Loyer", "Charges", "Assurance"] },
@@ -351,8 +378,9 @@ function useAppData() {
   }, []);
 
   const persist = useCallback(async (next) => {
-    setData(next);
-    try { await window.storage.set("finance-app-data", JSON.stringify(next)); }
+    const stamped = { ...next, updatedAt: Date.now() };
+    setData(stamped);
+    try { await window.storage.set("finance-app-data", JSON.stringify(stamped)); }
     catch (e) { console.error("Erreur de sauvegarde", e); }
   }, []);
 
@@ -1007,25 +1035,13 @@ function RecapTab({ data, categories, year, setYear }) {
 /* Backup / GitHub sync sheet                                              */
 /* ---------------------------------------------------------------------- */
 
-function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin }) {
+function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, gh, updateGh, lastSync }) {
   const fileRef = useRef(null);
   const [importError, setImportError] = useState("");
   const [confirmImport, setConfirmImport] = useState(null);
   const [showLockSetup, setShowLockSetup] = useState(false);
   const [confirmDisableLock, setConfirmDisableLock] = useState(false);
-  const [gh, setGh] = useState({ token: "", repo: "", path: "carnet-data.json", branch: "main" });
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await window.storage.get("github-sync-config");
-        if (res && res.value) setGh((g) => ({ ...g, ...JSON.parse(res.value) }));
-      } catch (e) {}
-    })();
-  }, []);
   const [ghStatus, setGhStatus] = useState(null);
-
-  async function saveGhConfig(next) { try { await window.storage.set("github-sync-config", JSON.stringify(next)); } catch (e) {} }
-  function updateGh(patch) { const next = { ...gh, ...patch }; setGh(next); saveGhConfig(next); }
 
   function handleExport() {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
@@ -1043,47 +1059,27 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin })
     reader.readAsText(file);
     e.target.value = "";
   }
-  function parseRepo() {
-    const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
-    if (!owner || !repo) throw new Error("Format attendu : utilisateur/depot");
-    return { owner, repo };
-  }
   async function pushToGithub() {
     setGhStatus({ type: "loading", message: "Envoi en cours…" });
     try {
-      const { owner, repo } = parseRepo();
-      if (!gh.token) throw new Error("Ajoute ton token d'accès personnel");
-      const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${gh.path}`;
-      let sha;
-      const getRes = await fetch(`${apiUrl}?ref=${gh.branch}`, { headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json" } });
-      if (getRes.ok) { const j = await getRes.json(); sha = j.sha; }
-      else if (getRes.status !== 404) throw new Error(`Lecture impossible (${getRes.status})`);
-      const putRes = await fetch(apiUrl, {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
-        body: JSON.stringify({ message: `Mise à jour Carnet — ${new Date().toLocaleString("fr-FR")}`, content: b64EncodeUtf8(JSON.stringify(data, null, 2)), branch: gh.branch, ...(sha ? { sha } : {}) }),
-      });
-      if (!putRes.ok) { const j = await putRes.json().catch(() => ({})); throw new Error(j.message || `Échec de l'envoi (${putRes.status})`); }
+      const existing = await ghGetFile(gh);
+      await ghPutFile(gh, data, existing?.sha);
       setGhStatus({ type: "success", message: "Envoyé sur GitHub." });
     } catch (e) { setGhStatus({ type: "error", message: e.message }); }
   }
   async function pullFromGithub() {
     setGhStatus({ type: "loading", message: "Récupération en cours…" });
     try {
-      const { owner, repo } = parseRepo();
-      if (!gh.token) throw new Error("Ajoute ton token d'accès personnel");
-      const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${gh.path}?ref=${gh.branch}`;
-      const res = await fetch(apiUrl, { headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json" } });
-      if (!res.ok) throw new Error(`Fichier introuvable (${res.status})`);
-      const j = await res.json();
-      const parsed = JSON.parse(b64DecodeUtf8(j.content.replace(/\n/g, "")));
-      setConfirmImport(parsed);
+      const remote = await ghGetFile(gh);
+      if (!remote) throw new Error("Fichier introuvable sur GitHub.");
+      setConfirmImport(remote.data);
       setGhStatus(null);
     } catch (e) { setGhStatus({ type: "error", message: e.message }); }
   }
   function copyLink() {
     try {
-      const { owner, repo } = parseRepo();
+      const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
+      if (!owner || !repo) throw new Error("Dépôt invalide");
       const url = `https://raw.githubusercontent.com/${owner}/${repo}/${gh.branch}/${gh.path}`;
       navigator.clipboard?.writeText(url);
       setGhStatus({ type: "success", message: "Lien copié (fonctionne si le dépôt est public)." });
@@ -1102,19 +1098,26 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin })
       </div>
       <div style={{ height: 1, background: "var(--line)", margin: "4px 0" }} />
       <div>
-        <div className="field-label" style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}><Link2 size={13} /> Lien internet (GitHub)</div>
-        <div className="hint-line" style={{ marginTop: 0, marginBottom: 10 }}>Synchronise tes données avec un fichier dans un dépôt GitHub à toi. Utilise un token à accès restreint (fine-grained, droit « Contents: Read and write » sur ce seul dépôt).</div>
+        <div className="field-label" style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}><Link2 size={13} /> Synchronisation GitHub</div>
+        <div className="hint-line" style={{ marginTop: 0, marginBottom: 10 }}>
+          Utilise le même dépôt, le même fichier et le même token sur chacun de tes appareils (téléphone, PC…) pour qu'ils partagent les mêmes données. Token à accès restreint (fine-grained, droit « Contents: Read and write » sur ce seul dépôt).
+        </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Field label="Dépôt (utilisateur/depot)"><input className="text-input" placeholder="ex. jdupont/mes-finances" value={gh.repo} onChange={(e) => updateGh({ repo: e.target.value })} /></Field>
           <Field label="Chemin du fichier"><input className="text-input" value={gh.path} onChange={(e) => updateGh({ path: e.target.value })} /></Field>
           <Field label="Branche"><input className="text-input" value={gh.branch} onChange={(e) => updateGh({ branch: e.target.value })} /></Field>
           <Field label="Token d'accès personnel"><input className="text-input" type="password" placeholder="ghp_… ou github_pat_…" value={gh.token} onChange={(e) => updateGh({ token: e.target.value })} /></Field>
         </div>
+        <label className="autosync-row">
+          <input type="checkbox" checked={!!gh.autoSync} onChange={(e) => updateGh({ autoSync: e.target.checked })} />
+          <span>Synchroniser automatiquement à chaque modification</span>
+        </label>
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           <button className="ghost-btn small" style={{ flex: 1, marginTop: 0 }} onClick={pullFromGithub}><RefreshCw size={13} /> Charger</button>
           <button className="primary-btn" style={{ flex: 1, marginTop: 0, padding: 9, fontSize: 13 }} onClick={pushToGithub}><Upload size={13} style={{ marginRight: 4, verticalAlign: -2 }} /> Envoyer</button>
         </div>
         <button className="ghost-btn small" style={{ width: "100%" }} onClick={copyLink}><Copy size={13} /> Copier le lien du fichier</button>
+        {lastSync && !ghStatus && <div className={`sync-status ${lastSync.type}`}>{lastSync.message}</div>}
         {ghStatus && <div className={`sync-status ${ghStatus.type}`}>{ghStatus.message}</div>}
       </div>
       {confirmImport && (
@@ -1244,6 +1247,66 @@ function App({ pinHash, onSetPin, onClearPin }) {
   const [year, setYear] = useState(new Date().getFullYear());
   const [showBackup, setShowBackup] = useState(false);
 
+  const [gh, setGhState] = useState(null);
+  const [lastSync, setLastSync] = useState(null);
+  const [remoteNewer, setRemoteNewer] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.storage.get("github-sync-config");
+        setGhState(res && res.value ? { token: "", repo: "", path: "carnet-data.json", branch: "main", autoSync: false, ...JSON.parse(res.value) } : { token: "", repo: "", path: "carnet-data.json", branch: "main", autoSync: false });
+      } catch (e) {
+        setGhState({ token: "", repo: "", path: "carnet-data.json", branch: "main", autoSync: false });
+      }
+    })();
+  }, []);
+  const updateGh = useCallback((patch) => {
+    setGhState((g) => {
+      const next = { ...(g || {}), ...patch };
+      window.storage.set("github-sync-config", JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  // Auto-push to GitHub a few seconds after each change, if enabled and configured.
+  const firstRun = useRef(true);
+  const pushTimer = useRef(null);
+  useEffect(() => {
+    if (firstRun.current) { firstRun.current = false; return; }
+    if (!data || !gh || !gh.autoSync || !gh.token || !gh.repo) return;
+    if (pushTimer.current) clearTimeout(pushTimer.current);
+    pushTimer.current = setTimeout(async () => {
+      try {
+        const existing = await ghGetFile(gh).catch(() => null);
+        await ghPutFile(gh, data, existing?.sha);
+        setLastSync({ type: "success", message: `Synchronisé à ${new Date().toLocaleTimeString("fr-FR")}` });
+      } catch (e) {
+        setLastSync({ type: "error", message: `Échec de la synchro auto : ${e.message}` });
+      }
+    }, 4000);
+    return () => { if (pushTimer.current) clearTimeout(pushTimer.current); };
+  }, [data, gh]);
+
+  // Check for a newer version on GitHub when the app opens or comes back to the foreground.
+  useEffect(() => {
+    if (!gh || !gh.token || !gh.repo || !data) return;
+    let cancelled = false;
+    async function check() {
+      try {
+        const remote = await ghGetFile(gh);
+        if (!cancelled && remote && (remote.data.updatedAt || 0) > (data.updatedAt || 0)) {
+          setRemoteNewer(remote.data);
+        }
+      } catch (e) { /* silent: manual Charger button remains available */ }
+    }
+    check();
+    function onVis() { if (document.visibilityState === "visible") check(); }
+    document.addEventListener("visibilitychange", onVis);
+    return () => { cancelled = true; document.removeEventListener("visibilitychange", onVis); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gh, data?.updatedAt]);
+
   const updateMonth = useCallback((key, monthData) => { if (!data) return; persist({ ...data, months: { ...data.months, [key]: monthData } }); }, [data, persist]);
   const catActions = {
     add: useCallback((cat) => { if (!data) return; persist({ ...data, categories: [...data.categories, cat] }); }, [data, persist]),
@@ -1271,7 +1334,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
   }, [data, persist]);
   const handleImport = useCallback((imported) => { persist({ ...DEFAULT_DATA, ...imported }); }, [persist]);
 
-  if (!ready || !data) return <div className="app-shell"><div className="loading">Chargement…</div></div>;
+  if (!ready || !data || !gh) return <div className="app-shell"><div className="loading">Chargement…</div></div>;
 
   return (
     <div className="app-shell">
@@ -1279,6 +1342,15 @@ function App({ pinHash, onSetPin, onClearPin }) {
         <span className="wordmark">Carnet</span>
         <button className="icon-btn" onClick={() => setShowBackup(true)} aria-label="Sauvegarde"><Settings size={19} /></button>
       </header>
+      {remoteNewer && (
+        <div className="sync-banner">
+          <span>Version plus récente sur GitHub ({new Date(remoteNewer.updatedAt).toLocaleString("fr-FR")}).</span>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+            <button onClick={() => setRemoteNewer(null)}>Ignorer</button>
+            <button className="primary" onClick={() => { persist(remoteNewer); setRemoteNewer(null); }}>Charger</button>
+          </div>
+        </div>
+      )}
       <main className="app-main">
         {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addContribution={addContribution} removeTransfer={removeTransfer} onNeedProject={() => setTab("epargne")} />}
         {tab === "enveloppes" && <EnvelopesTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} catActions={catActions} />}
@@ -1291,7 +1363,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
         <button className={`tab-btn ${tab === "epargne" ? "active" : ""}`} onClick={() => setTab("epargne")}><PiggyBank size={19} /><span>Épargne</span></button>
         <button className={`tab-btn ${tab === "recap" ? "active" : ""}`} onClick={() => setTab("recap")}><BarChart3 size={19} /><span>Récap</span></button>
       </nav>
-      {showBackup && <BackupSheet data={data} onClose={() => setShowBackup(false)} onImport={handleImport} pinHash={pinHash} onSetPin={onSetPin} onClearPin={onClearPin} />}
+      {showBackup && <BackupSheet data={data} onClose={() => setShowBackup(false)} onImport={handleImport} pinHash={pinHash} onSetPin={onSetPin} onClearPin={onClearPin} gh={gh} updateGh={updateGh} lastSync={lastSync} />}
     </div>
   );
 }
