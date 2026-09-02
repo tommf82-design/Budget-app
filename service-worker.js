@@ -5,6 +5,9 @@ const CORE_ASSETS = [
   "./manifest.json",
   "./icon-192.png",
   "./icon-512.png",
+  "./vendor/react.production.min.js",
+  "./vendor/react-dom.production.min.js",
+  "./vendor/babel.min.js",
 ];
 
 self.addEventListener("install", (event) => {
