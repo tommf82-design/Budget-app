@@ -24,9 +24,13 @@
   --forest: #3F5B44; --brass: #A9803F; --brick: #A6403A; --line: #DAD5C6; --line-dark: #C7C1AE;
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; background: var(--paper); }
+html, body { margin: 0; padding: 0; background: #E4E0D3; }
 body { font-family: 'Work Sans', sans-serif; color: var(--ink); }
 .app-shell { font-family: 'Work Sans', sans-serif; color: var(--ink); background: var(--paper); max-width: 480px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; position: relative; }
+@media (min-width: 640px) {
+  html, body { background: #DEDACC; }
+  .app-shell { max-width: 560px; margin: 40px auto; min-height: calc(100vh - 80px); border-radius: 22px; box-shadow: 0 24px 70px rgba(34,40,31,0.18); overflow: hidden; }
+}
 .loading { padding: 40px; text-align: center; color: var(--ink-soft); }
 .app-header { padding: 18px 20px 10px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; }
 .wordmark { font-family: 'Fraunces', serif; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
@@ -74,6 +78,7 @@ body { font-family: 'Work Sans', sans-serif; color: var(--ink); }
 .icon-btn.subtle { color: var(--ink-soft); }
 .fab { position: fixed; bottom: 88px; right: calc(50% - 240px + 20px); width: 52px; height: 52px; border-radius: 50%; background: var(--forest); color: var(--paper); border: none; display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 16px rgba(34,40,31,0.25); cursor: pointer; z-index: 20; }
 @media (max-width: 480px) { .fab { right: 20px; } }
+@media (min-width: 640px) { .fab { right: calc(50% - 280px + 20px); } }
 .tab-bar { position: sticky; bottom: 0; display: flex; background: var(--surface); border-top: 1px solid var(--line); padding: 8px 0 calc(8px + env(safe-area-inset-bottom)); flex-shrink: 0; }
 .tab-btn { flex: 1; background: none; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 3px; color: var(--ink-soft); font-size: 10px; font-family: 'Work Sans', sans-serif; padding: 4px 0; }
 .tab-btn.active { color: var(--forest); }
@@ -113,6 +118,7 @@ body { font-family: 'Work Sans', sans-serif; color: var(--ink); }
 .recap-val { font-weight: 500; font-variant-numeric: tabular-nums; }
 .sheet-overlay { position: fixed; inset: 0; background: rgba(34,40,31,0.4); display: flex; align-items: flex-end; justify-content: center; z-index: 50; }
 .sheet { background: var(--paper); width: 100%; max-width: 480px; border-radius: 16px 16px 0 0; padding: 4px 20px calc(20px + env(safe-area-inset-bottom)); max-height: 85vh; overflow-y: auto; }
+@media (min-width: 640px) { .sheet-overlay { align-items: center; } .sheet { max-width: 460px; border-radius: 20px; max-height: 80vh; padding: 4px 20px 20px; } }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 0 6px; position: sticky; top: 0; background: var(--paper); }
 .sheet-title { font-family: 'Fraunces', serif; font-size: 17px; font-weight: 500; }
 .sheet-body { display: flex; flex-direction: column; gap: 14px; padding-top: 6px; }
@@ -347,6 +353,14 @@ function countRecords(data) {
   }
   for (const p of data.savingsProjects || []) n += (p.contributions || []).length;
   return n;
+}
+function isRemoteAhead(remoteData, localData) {
+  if (!remoteData) return false;
+  const remoteCount = countRecords(remoteData);
+  const localCount = countRecords(localData);
+  if (remoteCount > localCount) return true;
+  if (remoteCount === localCount && (remoteData.updatedAt || 0) > (localData.updatedAt || 0)) return true;
+  return false;
 }
 async function ghListVersions(gh, limit) {
   const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
@@ -1005,7 +1019,7 @@ function RecapTab({ data, categories, year, setYear }) {
       income += m.income || 0;
       let monthNet = 0;
       for (const e of m.expenses || []) {
-        if (e.kind === "reimbursement") { reimb += e.amount; monthNet -= e.amount; }
+        if (e.kind === "reimbursement") { reimb += e.amount; }
         else { expenses += e.amount; monthNet += e.amount; }
         const key = categories.find((c) => c.id === e.categoryId) ? e.categoryId : "_unknown";
         catMap[key] = (catMap[key] || 0) + signedAmount(e);
@@ -1022,7 +1036,7 @@ function RecapTab({ data, categories, year, setYear }) {
     return list.sort((a, b) => b.total - a.total);
   }, [categories, stats.catMap]);
 
-  const netSpent = stats.expenses - stats.reimb;
+  const netSpent = stats.expenses;
   const chartMonthly = months.map((k, i) => ({ name: MONTH_SHORT[i], "Dépensé": Math.max(0, stats.monthly[i]) }));
 
   return (
@@ -1102,7 +1116,7 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
     setGhStatus({ type: "loading", message: "Vérification…" });
     try {
       const existing = await ghGetFile(gh);
-      if (existing && countRecords(existing.data) > countRecords(data)) {
+      if (existing && isRemoteAhead(existing.data, data)) {
         setGhStatus(null);
         setConfirmOverwrite({ sha: existing.sha, remoteCount: countRecords(existing.data), localCount: countRecords(data) });
         return;
@@ -1359,7 +1373,6 @@ function App({ pinHash, onSetPin, onClearPin }) {
 
   const [gh, setGhState] = useState(null);
   const [lastSync, setLastSync] = useState(null);
-  const [remoteNewer, setRemoteNewer] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -1380,6 +1393,8 @@ function App({ pinHash, onSetPin, onClearPin }) {
   }, []);
 
   // Auto-push to GitHub a few seconds after each change, if enabled and configured.
+  // If GitHub turns out to be ahead (e.g. another device synced in the meantime),
+  // load that newer version instead of push, automatically, no confirmation needed.
   const firstRun = useRef(true);
   const pushTimer = useRef(null);
   useEffect(() => {
@@ -1389,8 +1404,9 @@ function App({ pinHash, onSetPin, onClearPin }) {
     pushTimer.current = setTimeout(async () => {
       try {
         const existing = await ghGetFile(gh).catch(() => null);
-        if (existing && countRecords(existing.data) > countRecords(data)) {
-          setLastSync({ type: "error", message: "Synchro auto annulée : la version sur GitHub semble plus complète que la version locale. Va dans Sauvegarde pour vérifier avant d'envoyer." });
+        if (existing && isRemoteAhead(existing.data, data)) {
+          persist(existing.data);
+          setLastSync({ type: "success", message: `Version plus récente chargée depuis GitHub à ${new Date().toLocaleTimeString("fr-FR")}` });
           return;
         }
         await ghPutFile(gh, data, existing?.sha);
@@ -1402,15 +1418,17 @@ function App({ pinHash, onSetPin, onClearPin }) {
     return () => { if (pushTimer.current) clearTimeout(pushTimer.current); };
   }, [data, gh]);
 
-  // Check for a newer version on GitHub when the app opens or comes back to the foreground.
+  // Check for a newer version on GitHub when the app opens or comes back to the
+  // foreground, and load it automatically — no confirmation needed.
   useEffect(() => {
     if (!gh || !gh.token || !gh.repo || !data) return;
     let cancelled = false;
     async function check() {
       try {
         const remote = await ghGetFile(gh);
-        if (!cancelled && remote && (remote.data.updatedAt || 0) > (data.updatedAt || 0)) {
-          setRemoteNewer(remote.data);
+        if (!cancelled && isRemoteAhead(remote?.data, data)) {
+          persist(remote.data);
+          setLastSync({ type: "success", message: `Version plus récente chargée depuis GitHub à ${new Date().toLocaleTimeString("fr-FR")}` });
         }
       } catch (e) { /* silent: manual Charger button remains available */ }
     }
@@ -1456,15 +1474,6 @@ function App({ pinHash, onSetPin, onClearPin }) {
         <span className="wordmark">Carnet</span>
         <button className="icon-btn" onClick={() => setShowBackup(true)} aria-label="Sauvegarde"><Settings size={19} /></button>
       </header>
-      {remoteNewer && (
-        <div className="sync-banner">
-          <span>Version plus récente sur GitHub ({new Date(remoteNewer.updatedAt).toLocaleString("fr-FR")}).</span>
-          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-            <button onClick={() => setRemoteNewer(null)}>Ignorer</button>
-            <button className="primary" onClick={() => { persist(remoteNewer); setRemoteNewer(null); }}>Charger</button>
-          </div>
-        </div>
-      )}
       <main className="app-main">
         {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addContribution={addContribution} removeTransfer={removeTransfer} onNeedProject={() => setTab("epargne")} />}
         {tab === "enveloppes" && <EnvelopesTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} catActions={catActions} />}
