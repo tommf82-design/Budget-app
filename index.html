@@ -229,6 +229,7 @@ const BarChart3 = (p) => <Icon {...p}><line x1="5" y1="20" x2="5" y2="12" /><lin
 const RefreshCw = (p) => <Icon {...p}><path d="M21 12a9 9 0 0 1-15.4 6.4L3 16" /><path d="M3 12a9 9 0 0 1 15.4-6.4L21 8" /><polyline points="21 3 21 8 16 8" /><polyline points="3 21 3 16 8 16" /></Icon>;
 const Copy = (p) => <Icon {...p}><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></Icon>;
 const Link2 = (p) => <Icon {...p}><rect x="2" y="8" width="9" height="8" rx="4" /><rect x="13" y="8" width="9" height="8" rx="4" /></Icon>;
+const History = (p) => <Icon {...p}><path d="M3 12a9 9 0 1 0 2.6-6.3" /><polyline points="3 5 3 10 8 10" /><polyline points="12 8 12 12 15 14" /></Icon>;
 
 /* ---------------------------------------------------------------------- */
 /* Lightweight charts (no external charting library)                       */
@@ -335,6 +336,35 @@ async function ghPutFile(gh, dataObj, sha) {
     body: JSON.stringify({ message: `Carnet — ${new Date().toLocaleString("fr-FR")}`, content: b64EncodeUtf8(JSON.stringify(dataObj, null, 2)), branch: gh.branch, ...(sha ? { sha } : {}) }),
   });
   if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.message || `Échec de l'envoi (${res.status})`); }
+}
+function countRecords(data) {
+  if (!data) return 0;
+  let n = 0;
+  const months = data.months || {};
+  for (const key in months) {
+    n += (months[key].expenses || []).length;
+    n += (months[key].transfers || []).length;
+  }
+  for (const p of data.savingsProjects || []) n += (p.contributions || []).length;
+  return n;
+}
+async function ghListVersions(gh, limit) {
+  const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
+  if (!owner || !repo) throw new Error("Dépôt invalide (attendu utilisateur/depot)");
+  if (!gh.token) throw new Error("Ajoute ton token d'accès personnel");
+  const url = `https://api.github.com/repos/${owner}/${repo}/commits?path=${encodeURIComponent(gh.path)}&sha=${gh.branch}&per_page=${limit || 20}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json" } });
+  if (!res.ok) throw new Error(`Historique introuvable (${res.status})`);
+  const j = await res.json();
+  return j.map((c) => ({ sha: c.sha, date: c.commit?.author?.date, message: c.commit?.message }));
+}
+async function ghGetFileAtRef(gh, ref) {
+  const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${gh.path}?ref=${ref}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json" } });
+  if (!res.ok) throw new Error(`Version introuvable (${res.status})`);
+  const j = await res.json();
+  return JSON.parse(b64DecodeUtf8(j.content.replace(/\n/g, "")));
 }
 
 const DEFAULT_CATEGORIES = [
@@ -1042,6 +1072,8 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
   const [showLockSetup, setShowLockSetup] = useState(false);
   const [confirmDisableLock, setConfirmDisableLock] = useState(false);
   const [ghStatus, setGhStatus] = useState(null);
+  const [confirmOverwrite, setConfirmOverwrite] = useState(null);
+  const [showHistory, setShowHistory] = useState(false);
 
   function handleExport() {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
@@ -1059,12 +1091,23 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
     reader.readAsText(file);
     e.target.value = "";
   }
-  async function pushToGithub() {
+  async function doPush(existingSha) {
     setGhStatus({ type: "loading", message: "Envoi en cours…" });
     try {
-      const existing = await ghGetFile(gh);
-      await ghPutFile(gh, data, existing?.sha);
+      await ghPutFile(gh, data, existingSha);
       setGhStatus({ type: "success", message: "Envoyé sur GitHub." });
+    } catch (e) { setGhStatus({ type: "error", message: e.message }); }
+  }
+  async function pushToGithub() {
+    setGhStatus({ type: "loading", message: "Vérification…" });
+    try {
+      const existing = await ghGetFile(gh);
+      if (existing && countRecords(existing.data) > countRecords(data)) {
+        setGhStatus(null);
+        setConfirmOverwrite({ sha: existing.sha, remoteCount: countRecords(existing.data), localCount: countRecords(data) });
+        return;
+      }
+      await doPush(existing?.sha);
     } catch (e) { setGhStatus({ type: "error", message: e.message }); }
   }
   async function pullFromGithub() {
@@ -1117,8 +1160,20 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
           <button className="primary-btn" style={{ flex: 1, marginTop: 0, padding: 9, fontSize: 13 }} onClick={pushToGithub}><Upload size={13} style={{ marginRight: 4, verticalAlign: -2 }} /> Envoyer</button>
         </div>
         <button className="ghost-btn small" style={{ width: "100%" }} onClick={copyLink}><Copy size={13} /> Copier le lien du fichier</button>
+        <button className="ghost-btn small" style={{ width: "100%" }} onClick={() => setShowHistory(true)}><History size={13} /> Restaurer une version précédente</button>
         {lastSync && !ghStatus && <div className={`sync-status ${lastSync.type}`}>{lastSync.message}</div>}
         {ghStatus && <div className={`sync-status ${ghStatus.type}`}>{ghStatus.message}</div>}
+        {confirmOverwrite && (
+          <div className="danger-zone">
+            <div className="danger-text">
+              La version sur GitHub contient plus de mouvements ({confirmOverwrite.remoteCount}) que ta version locale ({confirmOverwrite.localCount}). L'écraser quand même ? Astuce : essaie plutôt "Charger" pour récupérer la version la plus complète, ou "Restaurer une version précédente" pour comparer.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="ghost-btn small" style={{ flex: 1 }} onClick={() => setConfirmOverwrite(null)}>Annuler</button>
+              <button className="danger-btn" style={{ flex: 1 }} onClick={() => { doPush(confirmOverwrite.sha); setConfirmOverwrite(null); }}>Écraser quand même</button>
+            </div>
+          </div>
+        )}
       </div>
       {confirmImport && (
         <div className="danger-zone">
@@ -1129,6 +1184,7 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
           </div>
         </div>
       )}
+      {showHistory && <RestoreVersionSheet gh={gh} onClose={() => setShowHistory(false)} onPick={(versionData) => { setConfirmImport(versionData); setShowHistory(false); }} />}
 
       <div style={{ height: 1, background: "var(--line)", margin: "4px 0" }} />
 
@@ -1236,6 +1292,60 @@ function LockScreen({ pinHash, onUnlock }) {
   );
 }
 
+function formatVersionDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" }) + " à " + d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function RestoreVersionSheet({ gh, onClose, onPick }) {
+  const [versions, setVersions] = useState(null);
+  const [error, setError] = useState("");
+  const [loadingSha, setLoadingSha] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await ghListVersions(gh, 20);
+        setVersions(list);
+      } catch (e) { setError(e.message); }
+    })();
+  }, []);
+
+  async function pick(sha) {
+    setLoadingSha(sha);
+    try {
+      const versionData = await ghGetFileAtRef(gh, sha);
+      onPick(versionData);
+    } catch (e) { setError(e.message); setLoadingSha(null); }
+  }
+
+  return (
+    <Sheet title="Versions précédentes" onClose={onClose}>
+      <div className="empty-hint">Chaque envoi vers GitHub garde une trace. Choisis un point dans le temps pour prévisualiser puis restaurer.</div>
+      {error && <div className="danger-text">{error}</div>}
+      {!versions && !error && <div className="empty-hint">Chargement…</div>}
+      {versions && versions.length === 0 && <div className="empty-hint">Aucun historique trouvé pour ce fichier.</div>}
+      {versions && versions.length > 0 && (
+        <ul className="expense-list">
+          {versions.map((v, i) => (
+            <li className="expense-row" key={v.sha}>
+              <div className="expense-click static">
+                <div className="expense-main">
+                  <div className="expense-label">{formatVersionDate(v.date)}{i === 0 && <span className="pill">Actuelle</span>}</div>
+                  <div className="expense-meta">{v.message}</div>
+                </div>
+              </div>
+              <button className="ghost-btn small" style={{ marginTop: 0, width: "auto", padding: "7px 12px" }} disabled={loadingSha === v.sha} onClick={() => pick(v.sha)}>
+                {loadingSha === v.sha ? "…" : "Voir"}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Sheet>
+  );
+}
+
 /* ---------------------------------------------------------------------- */
 /* App shell                                                               */
 /* ---------------------------------------------------------------------- */
@@ -1279,6 +1389,10 @@ function App({ pinHash, onSetPin, onClearPin }) {
     pushTimer.current = setTimeout(async () => {
       try {
         const existing = await ghGetFile(gh).catch(() => null);
+        if (existing && countRecords(existing.data) > countRecords(data)) {
+          setLastSync({ type: "error", message: "Synchro auto annulée : la version sur GitHub semble plus complète que la version locale. Va dans Sauvegarde pour vérifier avant d'envoyer." });
+          return;
+        }
         await ghPutFile(gh, data, existing?.sha);
         setLastSync({ type: "success", message: `Synchronisé à ${new Date().toLocaleTimeString("fr-FR")}` });
       } catch (e) {
