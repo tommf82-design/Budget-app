@@ -1,10 +1,13 @@
-const CACHE_NAME = "carnet-cache-v1";
+const CACHE_NAME = "carnet-cache-v2";
 const CORE_ASSETS = [
   "./",
   "./index.html",
   "./manifest.json",
   "./icon-192.png",
   "./icon-512.png",
+  "./vendor/react.production.min.js",
+  "./vendor/react-dom.production.min.js",
+  "./vendor/babel.min.js",
 ];
 
 self.addEventListener("install", (event) => {
@@ -27,6 +30,15 @@ self.addEventListener("activate", (event) => {
 // keeps working offline once it has been opened at least once with network.
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+
+  const url = new URL(event.request.url);
+  // GitHub API responses (and anything else dynamic/cross-origin) must never be
+  // cached: sync depends on always reading the current file "sha" from GitHub.
+  if (url.hostname === "api.github.com" || url.hostname === "raw.githubusercontent.com") {
+    event.respondWith(fetch(event.request));
+    return;
+  }
+
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
