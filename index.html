@@ -362,6 +362,10 @@ function isRemoteAhead(remoteData, localData) {
   if (remoteCount === localCount && (remoteData.updatedAt || 0) > (localData.updatedAt || 0)) return true;
   return false;
 }
+function compareMovements(a, b) {
+  if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+  return (b.createdAt || 0) - (a.createdAt || 0);
+}
 async function ghListVersions(gh, limit) {
   const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
   if (!owner || !repo) throw new Error("Dépôt invalide (attendu utilisateur/depot)");
@@ -553,7 +557,7 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
   const movements = useMemo(() => {
     const exp = month.expenses.map((e) => ({ ...e, _type: "expense" }));
     const trf = month.transfers.map((t) => ({ ...t, _type: "transfer" }));
-    return [...exp, ...trf].sort((a, b) => (a.date < b.date ? 1 : -1));
+    return [...exp, ...trf].sort(compareMovements);
   }, [month.expenses, month.transfers]);
 
   function saveIncome() {
@@ -673,7 +677,7 @@ function AddEntrySheet({ categories, projects, mKey, editing, onClose, onSaveExp
       return;
     }
     if (!categoryId) return;
-    onSaveExpense({ id: uid(), amount: val, categoryId, subcategory, label, date, kind });
+    onSaveExpense({ id: uid(), amount: val, categoryId, subcategory, label, date, kind, createdAt: Date.now() });
   }
 
   return (
@@ -829,7 +833,7 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
 function CategoryDetailSheet({ category, expenses, onClose, onDeleteExpense, onDeleteCategory, onAddSub, onDeleteSub }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [newSub, setNewSub] = useState("");
-  const sorted = [...expenses].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const sorted = [...expenses].sort(compareMovements);
   if (!category) return null;
   return (
     <Sheet title={category.name} onClose={onClose}>
@@ -947,7 +951,7 @@ function ContributionSheet({ project, mKey, onClose, onSave }) {
   const [date, setDate] = useState(todayISO());
   const [note, setNote] = useState("");
   const saved = project ? projectSaved(project) : 0;
-  function submit() { const val = parseFloat(amount.replace(",", ".")); if (!val || val <= 0) return; onSave({ id: uid(), amount: val, date, note, type }); }
+  function submit() { const val = parseFloat(amount.replace(",", ".")); if (!val || val <= 0) return; onSave({ id: uid(), amount: val, date, note, type, createdAt: Date.now() }); }
   return (
     <Sheet title={`« ${project?.name} »`} onClose={onClose}>
       <div className="segmented">
@@ -968,7 +972,7 @@ function ProjectDetailSheet({ project, onClose, onAddMovement, onDeleteMovement 
   if (!project) return null;
   const saved = projectSaved(project);
   const pct = project.target > 0 ? (saved / project.target) * 100 : 0;
-  const sorted = [...project.contributions].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const sorted = [...project.contributions].sort(compareMovements);
   return (
     <Sheet title={project.name} onClose={onClose}>
       <div>
@@ -1453,8 +1457,8 @@ function App({ pinHash, onSetPin, onClearPin }) {
     const project = data.savingsProjects.find((p) => p.id === projectId);
     const month = getMonth(data, mKey);
     const type = contrib.type || "deposit";
-    const record = { id: contrib.id, amount: contrib.amount, date: contrib.date, note: contrib.note, type, monthKey: mKey };
-    const transfer = { id: contrib.id, amount: contrib.amount, date: contrib.date, note: contrib.note, type, projectId, projectName: project?.name || "Projet" };
+    const record = { id: contrib.id, amount: contrib.amount, date: contrib.date, note: contrib.note, type, monthKey: mKey, createdAt: contrib.createdAt || Date.now() };
+    const transfer = { id: contrib.id, amount: contrib.amount, date: contrib.date, note: contrib.note, type, projectId, projectName: project?.name || "Projet", createdAt: contrib.createdAt || Date.now() };
     persist({ ...data, months: { ...data.months, [mKey]: { ...month, transfers: [...month.transfers, transfer] } }, savingsProjects: data.savingsProjects.map((p) => p.id === projectId ? { ...p, contributions: [...p.contributions, record] } : p) });
   }, [data, persist, mKey]);
   const removeTransfer = useCallback((key, transferId) => {
