@@ -394,10 +394,10 @@ const DEFAULT_CATEGORIES = [
   { id: "autres", name: "Autres", color: "#8A6A4E", subcategories: [] },
 ];
 const DEFAULT_DATA = { categories: DEFAULT_CATEGORIES, months: {}, savingsProjects: [] };
-function emptyMonth() { return { income: 0, expenses: [], envelopes: {}, transfers: [] }; }
+function emptyMonth() { return { income: 0, expenses: [], envelopes: {}, transfers: [], savingsGoal: 0 }; }
 function getMonth(data, key) {
   const m = data.months[key] || emptyMonth();
-  return { income: 0, expenses: [], envelopes: {}, transfers: [], ...m };
+  return { income: 0, expenses: [], envelopes: {}, transfers: [], savingsGoal: 0, ...m };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -439,9 +439,9 @@ function useAppData() {
 /* Small UI primitives                                                     */
 /* ---------------------------------------------------------------------- */
 
-function ProgressBar({ value, tone = "forest" }) {
+function ProgressBar({ value, tone = "forest", positiveOverflow = false }) {
   const pct = Math.max(0, Math.min(100, value));
-  const over = value > 100;
+  const over = value > 100 && !positiveOverflow;
   return (
     <div className="pbar-track">
       <div className="pbar-fill" style={{ width: `${pct}%`, background: over ? "var(--brick)" : `var(--${tone})` }} />
@@ -540,6 +540,8 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
   const [editingItem, setEditingItem] = useState(null);
   const [editIncome, setEditIncome] = useState(false);
   const [incomeDraft, setIncomeDraft] = useState(String(month.income || ""));
+  const [editGoal, setEditGoal] = useState(false);
+  const [goalDraft, setGoalDraft] = useState(String(month.savingsGoal || ""));
 
   const totalExpenses = useMemo(() => month.expenses.filter((e) => e.kind !== "reimbursement").reduce((s, e) => s + e.amount, 0), [month.expenses]);
   const totalReimb = useMemo(() => month.expenses.filter((e) => e.kind === "reimbursement").reduce((s, e) => s + e.amount, 0), [month.expenses]);
@@ -565,6 +567,14 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
     updateMonth(mKey, { ...month, income: val });
     setEditIncome(false);
   }
+  function saveGoal() {
+    const val = parseFloat(goalDraft.replace(",", ".")) || 0;
+    updateMonth(mKey, { ...month, savingsGoal: val });
+    setEditGoal(false);
+  }
+  const savingsGoal = month.savingsGoal || 0;
+  const goalPct = savingsGoal > 0 ? (totalTransfersNet / savingsGoal) * 100 : 0;
+  const goalReached = savingsGoal > 0 && totalTransfersNet >= savingsGoal;
   function addExpense(exp) { updateMonth(mKey, { ...month, expenses: [...month.expenses, exp] }); }
   function updateExpense(id, patch) { updateMonth(mKey, { ...month, expenses: month.expenses.map((e) => e.id === id ? { ...e, ...patch } : e) }); }
   function removeExpense(item) { updateMonth(mKey, { ...month, expenses: month.expenses.filter((e) => e.id !== item.id) }); }
@@ -602,6 +612,31 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
             {depositsSum > 0 && <span className="hero-chip" style={{ color: "#E6CFA3" }}>−{eur.format(depositsSum)} épargnés</span>}
             {withdrawalsSum > 0 && <span className="hero-chip" style={{ color: "#BFE0C4" }}>+{eur.format(withdrawalsSum)} retirés de l'épargne</span>}
           </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-title">Objectif d'épargne</div>
+        {editGoal ? (
+          <div className="inline-edit" style={{ marginBottom: 10 }}>
+            <input autoFocus className="inline-input small" inputMode="decimal" value={goalDraft}
+              onChange={(e) => setGoalDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveGoal()} />
+            <button className="icon-btn" onClick={saveGoal}><Check size={15} /></button>
+          </div>
+        ) : (
+          <button className="envelope-amount-btn" style={{ marginBottom: 10 }} onClick={() => { setGoalDraft(String(savingsGoal || "")); setEditGoal(true); }}>
+            {savingsGoal > 0 ? eur.format(savingsGoal) : "Définir un objectif"} <Pencil size={12} />
+          </button>
+        )}
+        {savingsGoal > 0 ? (
+          <>
+            <ProgressBar value={goalPct} tone="brass" positiveOverflow />
+            <div className="envelope-sub" style={goalReached ? { color: "var(--brass)", fontWeight: 500, marginTop: 6 } : { marginTop: 6 }}>
+              {eur.format(Math.max(0, totalTransfersNet))} sur {eur.format(savingsGoal)} ({Math.round(goalPct)} %){goalReached ? " — objectif atteint" : ""}
+            </div>
+          </>
+        ) : (
+          <div className="empty-hint">{totalTransfersNet > 0 ? `${eur.format(totalTransfersNet)} épargnés ce mois-ci. ` : ""}Définis un objectif pour suivre ta progression.</div>
         )}
       </div>
 
