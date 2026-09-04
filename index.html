@@ -303,8 +303,8 @@ function SimpleBarChart({ data, series, height = 170 }) {
 /* ---------------------------------------------------------------------- */
 
 const uid = () => Math.random().toString(36).slice(2, 10);
-const eur = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
-const eurCents = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
+const eur = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const eurCents = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const MONTH_NAMES = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
 const MONTH_SHORT = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
 
@@ -491,7 +491,7 @@ function MovementRow({ item, cat, onDelete, onEdit }) {
     pillText = isReimb ? "Remboursement" : null;
     pillStyle = {};
   }
-  const clickable = item._type !== "transfer" && !!onEdit;
+  const clickable = !!onEdit;
   const inner = (
     <>
       <span className="dot" style={{ background: dotColor }} />
@@ -534,7 +534,7 @@ const PALETTE = ["#3F5B44", "#7C8F4E", "#A9803F", "#8E6C8A", "#4E7C8A", "#8A6A4E
 /* Budget tab                                                              */
 /* ---------------------------------------------------------------------- */
 
-function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContribution, removeTransfer, onNeedProject }) {
+function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContribution, removeTransfer, updateTransfer, onNeedProject }) {
   const month = getMonth(data, mKey);
   const [showAdd, setShowAdd] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
@@ -553,8 +553,10 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
   const byCategory = useMemo(() => {
     const map = {};
     for (const e of month.expenses) map[e.categoryId] = (map[e.categoryId] || 0) + signedAmount(e);
-    return categories.map((c) => ({ ...c, total: map[c.id] || 0 })).filter((c) => c.total > 0).sort((a, b) => b.total - a.total);
-  }, [month.expenses, categories]);
+    const list = categories.map((c) => ({ ...c, total: map[c.id] || 0 })).filter((c) => c.total > 0);
+    if (totalTransfersNet > 0) list.push({ id: "_savings", name: "Épargne", color: "#A9803F", total: totalTransfersNet });
+    return list.sort((a, b) => b.total - a.total);
+  }, [month.expenses, categories, totalTransfersNet]);
 
   const movements = useMemo(() => {
     const exp = month.expenses.map((e) => ({ ...e, _type: "expense" }));
@@ -660,7 +662,7 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
 
       <div className="card">
         <div className="card-title">Mouvements</div>
-        <div className="hint-line">Touche une dépense ou un remboursement pour le modifier.</div>
+        <div className="hint-line">Touche un mouvement pour le modifier.</div>
         {movements.length === 0 ? (
           <div className="empty-hint">Aucun mouvement ce mois-ci. Ajoute une dépense, un remboursement ou un virement épargne avec le bouton +.</div>
         ) : (
@@ -672,9 +674,9 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
 
       <button className="fab" onClick={() => setShowAdd(true)} aria-label="Ajouter"><Plus size={22} /></button>
 
-      {(showAdd || editingItem) && (
+      {(showAdd || (editingItem && editingItem._type !== "transfer")) && (
         <AddEntrySheet
-          categories={categories} projects={data.savingsProjects} mKey={mKey} editing={editingItem}
+          categories={categories} projects={data.savingsProjects} mKey={mKey} editing={editingItem && editingItem._type !== "transfer" ? editingItem : null}
           onClose={() => { setShowAdd(false); setEditingItem(null); }}
           onSaveExpense={(exp) => { addExpense(exp); setShowAdd(false); }}
           onUpdateExpense={(id, patch) => { updateExpense(id, patch); setEditingItem(null); }}
@@ -683,7 +685,42 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
           onNeedProject={() => { setShowAdd(false); onNeedProject(); }}
         />
       )}
+      {editingItem && editingItem._type === "transfer" && (
+        <EditTransferSheet
+          transfer={editingItem}
+          onClose={() => setEditingItem(null)}
+          onSave={(patch) => { updateTransfer(mKey, editingItem.id, patch); setEditingItem(null); }}
+          onDelete={() => { removeTransfer(mKey, editingItem.id); setEditingItem(null); }}
+        />
+      )}
     </div>
+  );
+}
+
+function EditTransferSheet({ transfer, onClose, onSave, onDelete }) {
+  const [type, setType] = useState(transfer.type || "deposit");
+  const [amount, setAmount] = useState(String(transfer.amount));
+  const [date, setDate] = useState(transfer.date);
+  const [note, setNote] = useState(transfer.note || "");
+
+  function submit() {
+    const val = parseFloat(amount.replace(",", "."));
+    if (!val || val <= 0) return;
+    onSave({ amount: val, date, note, type });
+  }
+
+  return (
+    <Sheet title={`Modifier « ${transfer.projectName} »`} onClose={onClose}>
+      <div className="segmented">
+        <button className={type === "deposit" ? "seg-active" : ""} onClick={() => setType("deposit")}>Ajouter</button>
+        <button className={type === "withdrawal" ? "seg-active" : ""} onClick={() => setType("withdrawal")}>Retirer</button>
+      </div>
+      <Field label="Montant"><input className="text-input" inputMode="decimal" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
+      <Field label="Date"><input className="text-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+      <Field label="Note (optionnel)"><input className="text-input" placeholder={type === "withdrawal" ? "Ex. Achat billets d'avion" : "Ex. Virement mensuel"} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+      <button className="primary-btn" style={{ background: type === "withdrawal" ? "var(--forest)" : "var(--brass)" }} onClick={submit}>Enregistrer les modifications</button>
+      <button className="danger-btn ghost" onClick={onDelete}><Trash2 size={14} /> Supprimer ce mouvement</button>
+    </Sheet>
   );
 }
 
@@ -959,8 +996,8 @@ function SavingsTab({ projects, addProject, addContribution, removeProject, remo
       )}
       <button className="fab" style={{ background: "var(--brass)" }} onClick={() => setShowNew(true)} aria-label="Nouveau projet"><Plus size={22} /></button>
       {showNew && <NewProjectSheet onClose={() => setShowNew(false)} onSave={(p) => { addProject(p); setShowNew(false); }} />}
-      {movementFor && <ContributionSheet project={projects.find((p) => p.id === movementFor)} mKey={mKey} onClose={() => setMovementFor(null)} onSave={(c) => { addContribution(movementFor, c); setMovementFor(null); }} />}
       {detailProject && <ProjectDetailSheet project={projects.find((p) => p.id === detailProject)} onClose={() => setDetailProject(null)} onAddMovement={() => setMovementFor(detailProject)} onDeleteMovement={(c) => removeTransfer(c.monthKey, c.id)} />}
+      {movementFor && <ContributionSheet project={projects.find((p) => p.id === movementFor)} mKey={mKey} onClose={() => setMovementFor(null)} onSave={(c) => { addContribution(movementFor, c); setMovementFor(null); }} />}
     </div>
   );
 }
@@ -1503,6 +1540,15 @@ function App({ pinHash, onSetPin, onClearPin }) {
     if (!transfer) return;
     persist({ ...data, months: { ...data.months, [key]: { ...month, transfers: month.transfers.filter((t) => t.id !== transferId) } }, savingsProjects: data.savingsProjects.map((p) => p.id === transfer.projectId ? { ...p, contributions: p.contributions.filter((c) => c.id !== transferId) } : p) });
   }, [data, persist]);
+  const updateTransfer = useCallback((key, transferId, patch) => {
+    if (!data || !key) return;
+    const month = getMonth(data, key);
+    const transfer = month.transfers.find((t) => t.id === transferId);
+    if (!transfer) return;
+    const newMonth = { ...month, transfers: month.transfers.map((t) => t.id === transferId ? { ...t, ...patch } : t) };
+    const newProjects = data.savingsProjects.map((p) => p.id === transfer.projectId ? { ...p, contributions: p.contributions.map((c) => c.id === transferId ? { ...c, ...patch } : c) } : p);
+    persist({ ...data, months: { ...data.months, [key]: newMonth }, savingsProjects: newProjects });
+  }, [data, persist]);
   const handleImport = useCallback((imported) => { persist({ ...DEFAULT_DATA, ...imported }); }, [persist]);
 
   if (!ready || !data || !gh) return <div className="app-shell"><div className="loading">Chargement…</div></div>;
@@ -1514,7 +1560,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
         <button className="icon-btn" onClick={() => setShowBackup(true)} aria-label="Sauvegarde"><Settings size={19} /></button>
       </header>
       <main className="app-main">
-        {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addContribution={addContribution} removeTransfer={removeTransfer} onNeedProject={() => setTab("epargne")} />}
+        {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addContribution={addContribution} removeTransfer={removeTransfer} updateTransfer={updateTransfer} onNeedProject={() => setTab("epargne")} />}
         {tab === "enveloppes" && <EnvelopesTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} catActions={catActions} />}
         {tab === "epargne" && <SavingsTab projects={data.savingsProjects} addProject={addProject} addContribution={addContribution} removeProject={removeProject} removeTransfer={removeTransfer} mKey={mKey} />}
         {tab === "recap" && <RecapTab data={data} categories={data.categories} year={year} setYear={setYear} />}
