@@ -154,6 +154,42 @@ body { font-family: 'Work Sans', sans-serif; color: var(--ink); }
 .bar-chart-label { font-size: 9.5px; color: var(--ink-soft); white-space: nowrap; }
 .chart-legend { display: flex; gap: 14px; margin-bottom: 10px; }
 .chart-legend-item { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-soft); }
+
+/* True desktop layout: fills the window, sidebar nav instead of bottom bar,
+   cards flow into a responsive grid instead of a single fixed-width column. */
+@media (min-width: 960px) {
+  html, body { background: var(--paper); }
+  .app-shell {
+    display: grid;
+    grid-template-columns: 230px 1fr;
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "nav header" "nav main";
+    max-width: none;
+    width: 100%;
+    margin: 0;
+    min-height: 100vh;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: visible;
+  }
+  .app-header { grid-area: header; padding: 26px 40px 16px; border-bottom: 1px solid var(--line); }
+  .app-main { grid-area: main; padding: 28px 40px 60px; overflow-y: visible; max-width: 1100px; }
+  .tab-bar {
+    grid-area: nav; position: sticky; top: 0; bottom: auto; height: 100vh;
+    flex-direction: column; align-items: stretch; justify-content: flex-start;
+    border-top: none; border-right: 1px solid var(--line);
+    padding: 26px 14px; gap: 4px;
+  }
+  .tab-btn { flex-direction: row; justify-content: flex-start; align-items: center; gap: 11px; padding: 11px 14px; border-radius: 10px; font-size: 14px; }
+  .tab-btn span { font-size: 14px; }
+  .tab-btn.active { background: rgba(63,91,68,0.1); }
+  .tab-panel { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }
+  .month-switcher, .hero-card, .project-grid { grid-column: 1 / -1; }
+  .project-grid { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .fab { right: 40px; bottom: 40px; }
+  .sheet-overlay { align-items: center; }
+  .sheet { max-width: 480px; border-radius: 20px; max-height: 85vh; }
+}
 </style>
 </head>
 <body>
