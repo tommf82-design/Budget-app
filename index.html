@@ -22,13 +22,13 @@
 :root {
   --paper: #EDEAE1; --surface: #FFFFFF; --ink: #22281F; --ink-soft: #676F5E;
   --forest: #3F5B44; --brass: #A9803F; --brick: #A6403A; --line: #DAD5C6; --line-dark: #C7C1AE;
+  --page-bg: #E4E0D3; --hero-bg: #22281F; --hero-text: #EDEAE1; --chip-green: #BFE0C4; --chip-gold: #E6CFA3;
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; background: #E4E0D3; }
+html, body { margin: 0; padding: 0; background: var(--page-bg); }
 body { font-family: 'Work Sans', sans-serif; color: var(--ink); }
 .app-shell { font-family: 'Work Sans', sans-serif; color: var(--ink); background: var(--paper); max-width: 480px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; position: relative; }
 @media (min-width: 640px) {
-  html, body { background: #DEDACC; }
   .app-shell { max-width: 560px; margin: 40px auto; min-height: calc(100vh - 80px); border-radius: 22px; box-shadow: 0 24px 70px rgba(34,40,31,0.18); overflow: hidden; }
 }
 .loading { padding: 40px; text-align: center; color: var(--ink-soft); }
@@ -38,19 +38,19 @@ body { font-family: 'Work Sans', sans-serif; color: var(--ink); }
 .tab-panel { display: flex; flex-direction: column; gap: 14px; position: relative; }
 .month-switcher { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 4px 0 2px; }
 .month-label { font-family: 'Fraunces', serif; font-size: 16px; font-weight: 500; text-transform: capitalize; min-width: 130px; text-align: center; }
-.hero-card { background: var(--ink); color: var(--paper); border-radius: 14px; padding: 20px; }
+.hero-card { background: var(--hero-bg); color: var(--hero-text); border-radius: 14px; padding: 20px; }
 .hero-row { display: flex; align-items: flex-start; gap: 20px; }
 .hero-divider { width: 1px; align-self: stretch; background: rgba(237,234,225,0.2); }
 .hero-label { font-size: 12px; color: rgba(237,234,225,0.6); margin-bottom: 4px; }
 .hero-value { font-family: 'Fraunces', serif; font-size: 26px; font-weight: 500; }
 .hero-value.neg { color: #E08A85; }
-.hero-value-btn { background: none; border: none; color: var(--paper); cursor: pointer; padding: 0; font-family: 'Fraunces', serif; font-size: 26px; font-weight: 500; display: flex; align-items: center; gap: 6px; opacity: 0.95; }
+.hero-value-btn { background: none; border: none; color: var(--hero-text); cursor: pointer; padding: 0; font-family: 'Fraunces', serif; font-size: 26px; font-weight: 500; display: flex; align-items: center; gap: 6px; opacity: 0.95; }
 .hero-value-btn svg { opacity: 0.5; }
 .hero-sub { font-size: 12.5px; color: rgba(237,234,225,0.65); margin-top: 12px; }
 .hero-sub-chips { display: flex; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
 .hero-chip { font-size: 11.5px; font-weight: 500; }
 .inline-edit { display: flex; align-items: center; gap: 6px; }
-.inline-input { font-family: 'Fraunces', serif; font-size: 22px; font-weight: 500; background: rgba(237,234,225,0.1); border: 1px solid rgba(237,234,225,0.3); border-radius: 6px; color: var(--paper); padding: 2px 8px; width: 110px; }
+.inline-input { font-family: 'Fraunces', serif; font-size: 22px; font-weight: 500; background: rgba(237,234,225,0.1); border: 1px solid rgba(237,234,225,0.3); border-radius: 6px; color: var(--hero-text); padding: 2px 8px; width: 110px; }
 .inline-input.small { font-size: 15px; width: 80px; font-family: 'Work Sans', sans-serif; color: var(--ink); background: var(--paper); border-color: var(--line-dark); }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
 .card-title { font-family: 'Fraunces', serif; font-size: 15px; font-weight: 500; margin-bottom: 4px; }
@@ -154,6 +154,13 @@ body { font-family: 'Work Sans', sans-serif; color: var(--ink); }
 .bar-chart-label { font-size: 9.5px; color: var(--ink-soft); white-space: nowrap; }
 .chart-legend { display: flex; gap: 14px; margin-bottom: 10px; }
 .chart-legend-item { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-soft); }
+.theme-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.theme-swatch { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px; border: 1px solid var(--line-dark); border-radius: 12px; background: var(--surface); cursor: pointer; font-family: 'Work Sans', sans-serif; }
+.theme-swatch-active { border-color: var(--forest); border-width: 2px; padding: 11px; }
+.theme-dots { display: flex; gap: 4px; }
+.theme-dot { width: 16px; height: 16px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.08); }
+.theme-name { font-size: 12.5px; color: var(--ink); font-weight: 500; }
+.theme-check { position: absolute; top: 10px; right: 10px; color: var(--forest); }
 
 /* True desktop layout: fills the window, sidebar nav instead of bottom bar,
    cards flow into a responsive grid instead of a single fixed-width column. */
@@ -272,6 +279,7 @@ const RefreshCw = (p) => <Icon {...p}><path d="M21 12a9 9 0 0 1-15.4 6.4L3 16" /
 const Copy = (p) => <Icon {...p}><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></Icon>;
 const Link2 = (p) => <Icon {...p}><rect x="2" y="8" width="9" height="8" rx="4" /><rect x="13" y="8" width="9" height="8" rx="4" /></Icon>;
 const History = (p) => <Icon {...p}><path d="M3 12a9 9 0 1 0 2.6-6.3" /><polyline points="3 5 3 10 8 10" /><polyline points="12 8 12 12 15 14" /></Icon>;
+const Palette = (p) => <Icon {...p}><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.7-.9 1.2-1.8-.3-.5-.1-1.2.5-1.4.6-.2 1.3-.1 1.9.3.9.6 2.1.1 2.1-1A9 9 0 0 0 12 3z" /><circle cx="7.5" cy="10.5" r="1.1" fill={p.color || "currentColor"} stroke="none" /><circle cx="12" cy="7.2" r="1.1" fill={p.color || "currentColor"} stroke="none" /><circle cx="16.3" cy="10.5" r="1.1" fill={p.color || "currentColor"} stroke="none" /></Icon>;
 
 /* ---------------------------------------------------------------------- */
 /* Lightweight charts (no external charting library)                       */
@@ -566,6 +574,29 @@ function YearSwitcher({ year, setYear }) {
 
 const PALETTE = ["#3F5B44", "#7C8F4E", "#A9803F", "#8E6C8A", "#4E7C8A", "#8A6A4E", "#5B6B8A", "#8A5B5B"];
 
+const THEMES = [
+  { id: "carnet", name: "Carnet", vars: { "--paper": "#EDEAE1", "--surface": "#FFFFFF", "--ink": "#22281F", "--ink-soft": "#676F5E", "--forest": "#3F5B44", "--brass": "#A9803F", "--brick": "#A6403A", "--line": "#DAD5C6", "--line-dark": "#C7C1AE", "--page-bg": "#E4E0D3", "--hero-bg": "#22281F", "--hero-text": "#EDEAE1", "--chip-green": "#BFE0C4", "--chip-gold": "#E6CFA3" } },
+  { id: "nuit", name: "Nuit", vars: { "--paper": "#1B1E19", "--surface": "#242822", "--ink": "#EAEAE3", "--ink-soft": "#9BA394", "--forest": "#7FB489", "--brass": "#D9B36F", "--brick": "#E28A82", "--line": "#343830", "--line-dark": "#454B3F", "--page-bg": "#121411", "--hero-bg": "#0F1210", "--hero-text": "#EAEAE3", "--chip-green": "#7FB489", "--chip-gold": "#D9B36F" } },
+  { id: "lagune", name: "Lagune", vars: { "--paper": "#EAF1EE", "--surface": "#FFFFFF", "--ink": "#1E3230", "--ink-soft": "#5D7A76", "--forest": "#2E7D6E", "--brass": "#C99A4B", "--brick": "#B04B42", "--line": "#D3E2DD", "--line-dark": "#B9CFC8", "--page-bg": "#DDE9E4", "--hero-bg": "#16302C", "--hero-text": "#EAF1EE", "--chip-green": "#A9DDCB", "--chip-gold": "#EBD1A0" } },
+  { id: "terracotta", name: "Terracotta", vars: { "--paper": "#F1E7DD", "--surface": "#FFFDFA", "--ink": "#3B241A", "--ink-soft": "#8A6A57", "--forest": "#5B7554", "--brass": "#C1652F", "--brick": "#A93E2A", "--line": "#E2D2C1", "--line-dark": "#CBB39D", "--page-bg": "#E9D9C7", "--hero-bg": "#3B241A", "--hero-text": "#F1E7DD", "--chip-green": "#C9D9BC", "--chip-gold": "#F0C39A" } },
+  { id: "lavande", name: "Lavande", vars: { "--paper": "#EFEAF2", "--surface": "#FFFFFF", "--ink": "#2C2438", "--ink-soft": "#726A85", "--forest": "#5B6E8F", "--brass": "#8B6BA8", "--brick": "#B14E63", "--line": "#DBD3E4", "--line-dark": "#C3B9D2", "--page-bg": "#E4DCEA", "--hero-bg": "#241D30", "--hero-text": "#EFEAF2", "--chip-green": "#C6D3E6", "--chip-gold": "#D9C4EA" } },
+  { id: "menthe", name: "Menthe", vars: { "--paper": "#EAF4EE", "--surface": "#FFFFFF", "--ink": "#1F332A", "--ink-soft": "#5B7A6C", "--forest": "#2F8B5D", "--brass": "#B8934A", "--brick": "#B0473F", "--line": "#D4E7DC", "--line-dark": "#B7D3C4", "--page-bg": "#DFEEE4", "--hero-bg": "#17281F", "--hero-text": "#EAF4EE", "--chip-green": "#A6E0BE", "--chip-gold": "#E7CE9A" } },
+  { id: "sable", name: "Sable", vars: { "--paper": "#F3ECDD", "--surface": "#FFFDF7", "--ink": "#3A3223", "--ink-soft": "#867856", "--forest": "#77713F", "--brass": "#B8863A", "--brick": "#A5533B", "--line": "#E4D9BE", "--line-dark": "#CFC098", "--page-bg": "#EADFC5", "--hero-bg": "#332C1E", "--hero-text": "#F3ECDD", "--chip-green": "#D6D6A0", "--chip-gold": "#EACD98" } },
+  { id: "encre", name: "Encre", vars: { "--paper": "#E9EAF1", "--surface": "#FFFFFF", "--ink": "#1D2340", "--ink-soft": "#5A6084", "--forest": "#3B5590", "--brass": "#9A7D45", "--brick": "#A7433F", "--line": "#D3D6E5", "--line-dark": "#B7BCD6", "--page-bg": "#DEE0EC", "--hero-bg": "#141A33", "--hero-text": "#E9EAF1", "--chip-green": "#B9D0E8", "--chip-gold": "#E4CE9E" } },
+  { id: "corail", name: "Corail", vars: { "--paper": "#FBEDE6", "--surface": "#FFFFFF", "--ink": "#3E241F", "--ink-soft": "#8E6459", "--forest": "#4F7C6C", "--brass": "#D97B4F", "--brick": "#C24B3E", "--line": "#F0DAD0", "--line-dark": "#DEBEB0", "--page-bg": "#F3DFD3", "--hero-bg": "#3E241F", "--hero-text": "#FBEDE6", "--chip-green": "#BFE0D1", "--chip-gold": "#F1C299" } },
+  { id: "foret-profonde", name: "Forêt profonde", vars: { "--paper": "#141E19", "--surface": "#1C2A23", "--ink": "#E8EFE9", "--ink-soft": "#94A99D", "--forest": "#4FA377", "--brass": "#D8B15E", "--brick": "#DE7C74", "--line": "#2C3B32", "--line-dark": "#3B4E42", "--page-bg": "#0F1815", "--hero-bg": "#0C1512", "--hero-text": "#E8EFE9", "--chip-green": "#4FA377", "--chip-gold": "#D8B15E" } },
+  { id: "rose-poudre", name: "Rose poudré", vars: { "--paper": "#F6EAEA", "--surface": "#FFFFFF", "--ink": "#3B2429", "--ink-soft": "#8E6B70", "--forest": "#6E7E5C", "--brass": "#B98A6B", "--brick": "#B04E5A", "--line": "#EAD8D9", "--line-dark": "#D8BFC1", "--page-bg": "#EFDBDC", "--hero-bg": "#3B2429", "--hero-text": "#F6EAEA", "--chip-green": "#CFDDBB", "--chip-gold": "#EACBAE" } },
+  { id: "ardoise", name: "Ardoise", vars: { "--paper": "#E9EBEC", "--surface": "#FFFFFF", "--ink": "#22282C", "--ink-soft": "#5F6B72", "--forest": "#3D6A78", "--brass": "#8F8158", "--brick": "#A34B45", "--line": "#D3D8DA", "--line-dark": "#B7C0C4", "--page-bg": "#DEE2E4", "--hero-bg": "#1B2124", "--hero-text": "#E9EBEC", "--chip-green": "#B7D6D6", "--chip-gold": "#DCD2A9" } },
+  { id: "automne", name: "Automne", vars: { "--paper": "#F3E8D6", "--surface": "#FFFCF5", "--ink": "#3A2812", "--ink-soft": "#8A6C42", "--forest": "#6E7233", "--brass": "#C17A2E", "--brick": "#A8452C", "--line": "#E5D3B2", "--line-dark": "#CBB588", "--page-bg": "#EBDCC0", "--hero-bg": "#3A2610", "--hero-text": "#F3E8D6", "--chip-green": "#D3D194", "--chip-gold": "#EBC182" } },
+  { id: "ocean", name: "Océan", vars: { "--paper": "#141A24", "--surface": "#1C2531", "--ink": "#E7EAF0", "--ink-soft": "#8D96A8", "--forest": "#4F8FA8", "--brass": "#D2A868", "--brick": "#E28A82", "--line": "#2A3341", "--line-dark": "#38445A", "--page-bg": "#0F1520", "--hero-bg": "#0D131C", "--hero-text": "#E7EAF0", "--chip-green": "#7FC7D6", "--chip-gold": "#D2A868" } },
+  { id: "blush-dore", name: "Blush doré", vars: { "--paper": "#F7F0E4", "--surface": "#FFFFFF", "--ink": "#2E2A20", "--ink-soft": "#8A7F65", "--forest": "#6C6136", "--brass": "#B4863B", "--brick": "#A85A45", "--line": "#EBE0CB", "--line-dark": "#D6C8A7", "--page-bg": "#EFE4CE", "--hero-bg": "#2E2A20", "--hero-text": "#F7F0E4", "--chip-green": "#D9D3AA", "--chip-gold": "#EACC94" } },
+];
+function applyTheme(themeId) {
+  const theme = THEMES.find((t) => t.id === themeId) || THEMES[0];
+  const root = document.documentElement;
+  Object.entries(theme.vars).forEach(([key, value]) => root.style.setProperty(key, value));
+}
+
 /* ---------------------------------------------------------------------- */
 /* Budget tab                                                              */
 /* ---------------------------------------------------------------------- */
@@ -646,9 +677,9 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
         <div className="hero-sub">Dépensé net ce mois-ci : {eur.format(totalExpenses)}</div>
         {(totalReimb > 0 || depositsSum > 0 || withdrawalsSum > 0) && (
           <div className="hero-sub-chips">
-            {totalReimb > 0 && <span className="hero-chip" style={{ color: "#BFE0C4" }}>+{eur.format(totalReimb)} remboursés</span>}
-            {depositsSum > 0 && <span className="hero-chip" style={{ color: "#E6CFA3" }}>−{eur.format(depositsSum)} épargnés</span>}
-            {withdrawalsSum > 0 && <span className="hero-chip" style={{ color: "#BFE0C4" }}>+{eur.format(withdrawalsSum)} retirés de l'épargne</span>}
+            {totalReimb > 0 && <span className="hero-chip" style={{ color: "var(--chip-green)" }}>+{eur.format(totalReimb)} remboursés</span>}
+            {depositsSum > 0 && <span className="hero-chip" style={{ color: "var(--chip-gold)" }}>−{eur.format(depositsSum)} épargnés</span>}
+            {withdrawalsSum > 0 && <span className="hero-chip" style={{ color: "var(--chip-green)" }}>+{eur.format(withdrawalsSum)} retirés de l'épargne</span>}
           </div>
         )}
       </div>
@@ -1191,6 +1222,28 @@ function RecapTab({ data, categories, year, setYear }) {
 /* Backup / GitHub sync sheet                                              */
 /* ---------------------------------------------------------------------- */
 
+function ThemeSheet({ theme, onPick, onClose }) {
+  return (
+    <Sheet title="Thème" onClose={onClose}>
+      <div className="empty-hint">Choisis l'ambiance de l'app. Le choix est propre à cet appareil.</div>
+      <div className="theme-grid">
+        {THEMES.map((t) => (
+          <button key={t.id} className={`theme-swatch ${theme === t.id ? "theme-swatch-active" : ""}`} onClick={() => onPick(t.id)}>
+            <span className="theme-dots">
+              <span className="theme-dot" style={{ background: t.vars["--paper"] }} />
+              <span className="theme-dot" style={{ background: t.vars["--forest"] }} />
+              <span className="theme-dot" style={{ background: t.vars["--brass"] }} />
+              <span className="theme-dot" style={{ background: t.vars["--hero-bg"] }} />
+            </span>
+            <span className="theme-name">{t.name}</span>
+            {theme === t.id && <span className="theme-check"><Check size={14} /></span>}
+          </button>
+        ))}
+      </div>
+    </Sheet>
+  );
+}
+
 function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, gh, updateGh, lastSync }) {
   const fileRef = useRef(null);
   const [importError, setImportError] = useState("");
@@ -1482,6 +1535,24 @@ function App({ pinHash, onSetPin, onClearPin }) {
   const [mKey, setMKey] = useState(monthKey(new Date()));
   const [year, setYear] = useState(new Date().getFullYear());
   const [showBackup, setShowBackup] = useState(false);
+  const [showTheme, setShowTheme] = useState(false);
+  const [theme, setThemeState] = useState("carnet");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.storage.get("app-theme");
+        const id = res && res.value ? res.value : "carnet";
+        setThemeState(id);
+        applyTheme(id);
+      } catch (e) { applyTheme("carnet"); }
+    })();
+  }, []);
+  function pickTheme(id) {
+    setThemeState(id);
+    applyTheme(id);
+    window.storage.set("app-theme", id).catch(() => {});
+  }
 
   const [gh, setGhState] = useState(null);
   const [lastSync, setLastSync] = useState(null);
@@ -1593,7 +1664,10 @@ function App({ pinHash, onSetPin, onClearPin }) {
     <div className="app-shell">
       <header className="app-header">
         <span className="wordmark">Carnet</span>
-        <button className="icon-btn" onClick={() => setShowBackup(true)} aria-label="Sauvegarde"><Settings size={19} /></button>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button className="icon-btn" onClick={() => setShowTheme(true)} aria-label="Thème"><Palette size={19} /></button>
+          <button className="icon-btn" onClick={() => setShowBackup(true)} aria-label="Sauvegarde"><Settings size={19} /></button>
+        </div>
       </header>
       <main className="app-main">
         {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addContribution={addContribution} removeTransfer={removeTransfer} updateTransfer={updateTransfer} onNeedProject={() => setTab("epargne")} />}
@@ -1608,6 +1682,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
         <button className={`tab-btn ${tab === "recap" ? "active" : ""}`} onClick={() => setTab("recap")}><BarChart3 size={19} /><span>Récap</span></button>
       </nav>
       {showBackup && <BackupSheet data={data} onClose={() => setShowBackup(false)} onImport={handleImport} pinHash={pinHash} onSetPin={onSetPin} onClearPin={onClearPin} gh={gh} updateGh={updateGh} lastSync={lastSync} />}
+      {showTheme && <ThemeSheet theme={theme} onPick={pickTheme} onClose={() => setShowTheme(false)} />}
     </div>
   );
 }
