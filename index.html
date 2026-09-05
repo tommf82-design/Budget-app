@@ -17,6 +17,7 @@
 <script src="vendor/react.production.min.js"></script>
 <script src="vendor/react-dom.production.min.js"></script>
 <script src="vendor/babel.min.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
 
 <style>
 :root {
@@ -391,6 +392,129 @@ async function ghGetFileAtRef(gh, ref) {
   if (!res.ok) throw new Error(`Version introuvable (${res.status})`);
   const j = await res.json();
   return JSON.parse(b64DecodeUtf8(j.content.replace(/\n/g, "")));
+}
+
+/* ---------------------------------------------------------------------- */
+/* Excel import (tailored to the "Budget mensuel et annuel" template:      */
+/* month tabs Jan..Déc, a "Suivi des dépenses" transaction table, and a    */
+/* "Revenus" table per month tab).                                        */
+/* ---------------------------------------------------------------------- */
+
+const MONTH_SHEET_NAMES = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Jui", "Aoû", "Sep", "Oct", "Nov", "Déc"];
+
+function xlCellStr(ws, ref) {
+  const cell = ws[ref];
+  if (!cell) return "";
+  const v = cell.w !== undefined ? cell.w : cell.v;
+  return v === undefined || v === null ? "" : String(v).trim();
+}
+function xlCellNum(ws, ref) {
+  const cell = ws[ref];
+  if (!cell || cell.v === undefined || cell.v === null || cell.v === "") return null;
+  const n = typeof cell.v === "number" ? cell.v : parseFloat(String(cell.v).replace(",", "."));
+  return isNaN(n) ? null : n;
+}
+function xlCellDateISO(ws, ref) {
+  const cell = ws[ref];
+  if (!cell || cell.v === undefined || cell.v === null || cell.v === "") return null;
+  let d = cell.v;
+  if (!(d instanceof Date)) {
+    if (typeof d === "number") d = new Date(Math.round((d - 25569) * 86400 * 1000));
+    else return null;
+  }
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+function parseBudgetWorkbook(workbook) {
+  const transactions = [];
+  const categoryNames = new Set();
+  const incomeBySheetMonth = [];
+  const creditsBySheetMonth = [];
+
+  MONTH_SHEET_NAMES.forEach((sheetName, monthIndex) => {
+    const ws = workbook.Sheets[sheetName];
+    if (!ws) return;
+
+    for (let row = 76; row <= 236; row++) {
+      const dateISO = xlCellDateISO(ws, `B${row}`);
+      const amount = xlCellNum(ws, `D${row}`);
+      if (!dateISO || amount === null || amount === 0) continue;
+      const catName = xlCellStr(ws, `F${row}`) || "Import Excel";
+      const note = xlCellStr(ws, `K${row}`);
+      transactions.push({ date: dateISO, amount: Math.abs(amount), kind: amount < 0 ? "reimbursement" : "expense", categoryName: catName, note });
+      categoryNames.add(catName);
+    }
+
+    let incomeSum = 0, hasIncome = false;
+    for (let row = 23; row <= 32; row++) {
+      const catName = xlCellStr(ws, `B${row}`);
+      if (!catName) continue;
+      const actuel = xlCellNum(ws, `F${row}`);
+      const prevu = xlCellNum(ws, `D${row}`);
+      const val = actuel !== null ? actuel : prevu;
+      if (val) { incomeSum += val; hasIncome = true; }
+    }
+    if (hasIncome) incomeBySheetMonth.push({ monthIndex, amount: incomeSum });
+
+    // Crédits et prêts: manual Prévu/Actuel per category, like Revenus — but
+    // treated as a regular expense (facture) rather than as income.
+    for (let row = 57; row <= 70; row++) {
+      const catName = xlCellStr(ws, `C${row}`);
+      if (!catName) continue;
+      const actuel = xlCellNum(ws, `F${row}`);
+      const prevu = xlCellNum(ws, `D${row}`);
+      const val = actuel !== null ? actuel : prevu;
+      if (val) { creditsBySheetMonth.push({ monthIndex, categoryName: catName, amount: val }); categoryNames.add(catName); }
+    }
+  });
+
+  const yearCounts = {};
+  transactions.forEach((t) => { const y = t.date.slice(0, 4); yearCounts[y] = (yearCounts[y] || 0) + 1; });
+  let year = new Date().getFullYear(), bestCount = 0;
+  Object.entries(yearCounts).forEach(([y, c]) => { if (c > bestCount) { bestCount = c; year = parseInt(y, 10); } });
+
+  creditsBySheetMonth.forEach(({ monthIndex, categoryName, amount }) => {
+    const date = `${year}-${String(monthIndex + 1).padStart(2, "0")}-01`;
+    transactions.push({ date, amount: Math.abs(amount), kind: "expense", categoryName, note: "Crédit / prêt" });
+  });
+
+  const monthlyIncome = {};
+  incomeBySheetMonth.forEach(({ monthIndex, amount }) => { monthlyIncome[`${year}-${String(monthIndex + 1).padStart(2, "0")}`] = amount; });
+
+  return { transactions, monthlyIncome, categoryNames: Array.from(categoryNames), year };
+}
+
+function mergeImportedData(data, parsed) {
+  const categories = [...data.categories];
+  const nameToId = {};
+  categories.forEach((c) => { nameToId[c.name.trim().toLowerCase()] = c.id; });
+  let paletteIdx = 0;
+  parsed.categoryNames.forEach((name) => {
+    const key = name.trim().toLowerCase();
+    if (!nameToId[key]) {
+      const newCat = { id: uid(), name: name.trim(), color: PALETTE[paletteIdx % PALETTE.length], subcategories: [] };
+      paletteIdx++;
+      categories.push(newCat);
+      nameToId[key] = newCat.id;
+    }
+  });
+
+  const months = { ...data.months };
+  parsed.transactions.forEach((t) => {
+    const monthKey = t.date.slice(0, 7);
+    const month = months[monthKey] ? { ...months[monthKey], expenses: [...months[monthKey].expenses] } : emptyMonth();
+    const categoryId = nameToId[t.categoryName.trim().toLowerCase()];
+    month.expenses.push({ id: uid(), amount: t.amount, categoryId, subcategory: "", label: t.note, date: t.date, kind: t.kind, createdAt: Date.now() });
+    months[monthKey] = month;
+  });
+
+  Object.entries(parsed.monthlyIncome).forEach(([monthKey, amount]) => {
+    const month = months[monthKey] || emptyMonth();
+    if (!month.income) months[monthKey] = { ...month, income: amount };
+  });
+
+  return { ...data, categories, months };
 }
 
 const DEFAULT_CATEGORIES = [
@@ -1217,6 +1341,7 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
   const [ghStatus, setGhStatus] = useState(null);
   const [confirmOverwrite, setConfirmOverwrite] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showImportExcel, setShowImportExcel] = useState(false);
 
   function handleExport() {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
@@ -1281,6 +1406,7 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
         <button className="ghost-btn" onClick={() => fileRef.current?.click()}><Upload size={15} /> Choisir un fichier .json</button>
         <input ref={fileRef} type="file" accept="application/json" style={{ display: "none" }} onChange={handleFile} />
         {importError && <div className="danger-text" style={{ marginTop: 8 }}>{importError}</div>}
+        <button className="ghost-btn" onClick={() => setShowImportExcel(true)}><Upload size={15} /> Importer depuis Excel (.xlsx)</button>
       </div>
       <div style={{ height: 1, background: "var(--line)", margin: "4px 0" }} />
       <div>
@@ -1328,6 +1454,7 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
         </div>
       )}
       {showHistory && <RestoreVersionSheet gh={gh} onClose={() => setShowHistory(false)} onPick={(versionData) => { setConfirmImport(versionData); setShowHistory(false); }} />}
+      {showImportExcel && <ImportExcelSheet data={data} onClose={() => setShowImportExcel(false)} onImport={onImport} />}
 
       <div style={{ height: 1, background: "var(--line)", margin: "4px 0" }} />
 
@@ -1484,6 +1611,64 @@ function RestoreVersionSheet({ gh, onClose, onPick }) {
             </li>
           ))}
         </ul>
+      )}
+    </Sheet>
+  );
+}
+
+function ImportExcelSheet({ data, onClose, onImport }) {
+  const fileRef = useRef(null);
+  const [status, setStatus] = useState(null);
+  const [preview, setPreview] = useState(null);
+
+  function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setStatus({ type: "loading", message: "Lecture du fichier…" });
+    setPreview(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const wb = XLSX.read(reader.result, { type: "array", cellDates: true });
+        const parsed = parseBudgetWorkbook(wb);
+        if (parsed.transactions.length === 0 && Object.keys(parsed.monthlyIncome).length === 0) {
+          setStatus({ type: "error", message: "Aucune donnée trouvée. Vérifie qu'il s'agit bien du modèle « Budget mensuel et annuel », avec des dépenses saisies dans le tableau « Suivi des dépenses » d'au moins un onglet mensuel." });
+          return;
+        }
+        const merged = mergeImportedData(data, parsed);
+        setPreview({ parsed, merged, newCatCount: merged.categories.length - data.categories.length });
+        setStatus(null);
+      } catch (err) {
+        setStatus({ type: "error", message: "Impossible de lire ce fichier : " + err.message });
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = "";
+  }
+
+  const monthCount = preview ? new Set(preview.parsed.transactions.map((t) => t.date.slice(0, 7))).size : 0;
+  const incomeMonthCount = preview ? Object.keys(preview.parsed.monthlyIncome).length : 0;
+
+  return (
+    <Sheet title="Importer depuis Excel" onClose={onClose}>
+      <div className="empty-hint">
+        Conçu pour le modèle « Budget mensuel et annuel » (onglets Jan à Déc). Récupère les dépenses et remboursements du tableau « Suivi des dépenses » de chaque onglet, le revenu total renseigné, et les crédits/prêts (importés comme des dépenses catégorisées). Les prévisionnels (Prévu) et les projets d'épargne du fichier ne sont pas importés dans cette version.
+      </div>
+      <button className="ghost-btn" onClick={() => fileRef.current?.click()}><Upload size={15} /> Choisir un fichier .xlsx</button>
+      <input ref={fileRef} type="file" accept=".xlsx" style={{ display: "none" }} onChange={handleFile} />
+      {status && <div className={`sync-status ${status.type}`}>{status.message}</div>}
+      {preview && (
+        <div className="danger-zone">
+          <div className="danger-text" style={{ color: "var(--forest)" }}>
+            {preview.parsed.transactions.length} mouvement(s) trouvé(s) sur {monthCount} mois (année {preview.parsed.year}).
+            {preview.newCatCount > 0 && ` ${preview.newCatCount} nouvelle(s) catégorie(s) seront créées.`}
+            {incomeMonthCount > 0 && ` Revenu détecté sur ${incomeMonthCount} mois.`}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="ghost-btn small" style={{ flex: 1 }} onClick={() => setPreview(null)}>Annuler</button>
+            <button className="danger-btn" style={{ flex: 1, background: "var(--forest)" }} onClick={() => { onImport(preview.merged); onClose(); }}>Importer</button>
+          </div>
+        </div>
       )}
     </Sheet>
   );

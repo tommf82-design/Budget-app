@@ -1,4 +1,4 @@
-const CACHE_NAME = "carnet-cache-v3";
+const CACHE_NAME = "carnet-cache-v4";
 const CORE_ASSETS = [
   "./",
   "./index.html",
@@ -8,6 +8,7 @@ const CORE_ASSETS = [
   "./vendor/react.production.min.js",
   "./vendor/react-dom.production.min.js",
   "./vendor/babel.min.js",
+  "./vendor/xlsx.full.min.js",
 ];
 
 self.addEventListener("install", (event) => {
