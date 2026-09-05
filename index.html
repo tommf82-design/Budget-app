@@ -517,6 +517,60 @@ function mergeImportedData(data, parsed) {
   return { ...data, categories, months };
 }
 
+function buildExcelWorkbook(data) {
+  const categories = data.categories;
+  const catName = (id) => categories.find((c) => c.id === id)?.name || "Catégorie supprimée";
+  const monthKeys = Object.keys(data.months).sort();
+
+  const movementRows = [];
+  monthKeys.forEach((mk) => {
+    const m = data.months[mk];
+    (m.expenses || []).forEach((e) => {
+      const isReimb = e.kind === "reimbursement";
+      movementRows.push([e.date, isReimb ? "Remboursement" : "Dépense", catName(e.categoryId), e.subcategory || "", e.label || "", isReimb ? -e.amount : e.amount]);
+    });
+    (m.transfers || []).forEach((t) => {
+      const isW = t.type === "withdrawal";
+      movementRows.push([t.date, isW ? "Retrait épargne" : "Épargne", t.projectName || "Épargne", "", t.note || "", isW ? t.amount : -t.amount]);
+    });
+  });
+  movementRows.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const movementsSheet = XLSX.utils.aoa_to_sheet([["Date", "Type", "Catégorie", "Sous-catégorie", "Libellé", "Montant (€)"], ...movementRows]);
+  movementsSheet["!cols"] = [{ wch: 12 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 28 }, { wch: 12 }];
+
+  const recapRows = [];
+  monthKeys.forEach((mk) => {
+    const m = data.months[mk];
+    const totalExpenses = (m.expenses || []).filter((e) => e.kind !== "reimbursement").reduce((s, e) => s + e.amount, 0);
+    const totalReimb = (m.expenses || []).filter((e) => e.kind === "reimbursement").reduce((s, e) => s + e.amount, 0);
+    const deposits = (m.transfers || []).filter((t) => t.type !== "withdrawal").reduce((s, t) => s + t.amount, 0);
+    const withdrawals = (m.transfers || []).filter((t) => t.type === "withdrawal").reduce((s, t) => s + t.amount, 0);
+    const net = deposits - withdrawals;
+    const remaining = (m.income || 0) - totalExpenses + totalReimb - net;
+    recapRows.push([monthLabel(mk), m.income || 0, totalExpenses, totalReimb, net, remaining]);
+  });
+  const recapSheet = XLSX.utils.aoa_to_sheet([["Mois", "Revenu", "Dépensé net", "Remboursé", "Épargné (net)", "Reste à vivre"], ...recapRows]);
+  recapSheet["!cols"] = [{ wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 14 }];
+
+  const catTotals = {};
+  monthKeys.forEach((mk) => {
+    (data.months[mk].expenses || []).forEach((e) => {
+      const key = categories.find((c) => c.id === e.categoryId) ? e.categoryId : "_unknown";
+      catTotals[key] = (catTotals[key] || 0) + signedAmount(e);
+    });
+  });
+  const catRows = Object.entries(catTotals).sort((a, b) => b[1] - a[1])
+    .map(([id, total]) => [id === "_unknown" ? "Catégories supprimées" : catName(id), total]);
+  const catSheet = XLSX.utils.aoa_to_sheet([["Catégorie", "Total (€)"], ...catRows]);
+  catSheet["!cols"] = [{ wch: 22 }, { wch: 14 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, movementsSheet, "Mouvements");
+  XLSX.utils.book_append_sheet(wb, recapSheet, "Récap mensuel");
+  XLSX.utils.book_append_sheet(wb, catSheet, "Répartition catégories");
+  return wb;
+}
+
 const DEFAULT_CATEGORIES = [
   { id: "logement", name: "Logement", color: "#3F5B44", subcategories: ["Loyer", "Charges", "Assurance"] },
   { id: "alimentation", name: "Alimentation", color: "#7C8F4E", subcategories: ["Courses", "Restaurants"] },
@@ -1351,6 +1405,16 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }
+  function handleExportExcel() {
+    const wb = buildExcelWorkbook(data);
+    const wbout = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+    const blob = new Blob([wbout], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `carnet-export-${todayISO()}.xlsx`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
   function handleFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1401,6 +1465,7 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
     <Sheet title="Sauvegarde" onClose={onClose}>
       <div className="empty-hint">Tes données sont déjà enregistrées localement sur cet appareil (stockage du navigateur), indépendamment de toute connexion.</div>
       <button className="primary-btn" onClick={handleExport}><Download size={16} style={{ marginRight: 6, verticalAlign: -3 }} /> Exporter en .json</button>
+      <button className="ghost-btn" onClick={handleExportExcel}><Download size={15} /> Exporter en .xlsx</button>
       <div>
         <div className="field-label" style={{ marginBottom: 8 }}>Importer un fichier</div>
         <button className="ghost-btn" onClick={() => fileRef.current?.click()}><Upload size={15} /> Choisir un fichier .json</button>
