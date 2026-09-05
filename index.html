@@ -522,21 +522,13 @@ function buildExcelWorkbook(data) {
   const catName = (id) => categories.find((c) => c.id === id)?.name || "Catégorie supprimée";
   const monthKeys = Object.keys(data.months).sort();
 
-  const movementRows = [];
-  monthKeys.forEach((mk) => {
-    const m = data.months[mk];
-    (m.expenses || []).forEach((e) => {
-      const isReimb = e.kind === "reimbursement";
-      movementRows.push([e.date, isReimb ? "Remboursement" : "Dépense", catName(e.categoryId), e.subcategory || "", e.label || "", isReimb ? -e.amount : e.amount]);
-    });
-    (m.transfers || []).forEach((t) => {
-      const isW = t.type === "withdrawal";
-      movementRows.push([t.date, isW ? "Retrait épargne" : "Épargne", t.projectName || "Épargne", "", t.note || "", isW ? t.amount : -t.amount]);
-    });
-  });
-  movementRows.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  const movementsSheet = XLSX.utils.aoa_to_sheet([["Date", "Type", "Catégorie", "Sous-catégorie", "Libellé", "Montant (€)"], ...movementRows]);
-  movementsSheet["!cols"] = [{ wch: 12 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 28 }, { wch: 12 }];
+  function sheetSafeName(name) {
+    return name.replace(/[:\\/?*\[\]]/g, "-").slice(0, 31);
+  }
+  function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+  const usedNames = new Set();
+  const wb = XLSX.utils.book_new();
 
   const recapRows = [];
   monthKeys.forEach((mk) => {
@@ -548,7 +540,39 @@ function buildExcelWorkbook(data) {
     const net = deposits - withdrawals;
     const remaining = (m.income || 0) - totalExpenses + totalReimb - net;
     recapRows.push([monthLabel(mk), m.income || 0, totalExpenses, totalReimb, net, remaining]);
+
+    // One sheet per month: a small recap block, then that month's movements.
+    const rows = [
+      ["Revenu", m.income || 0],
+      ["Dépensé net", totalExpenses],
+      ["Remboursé", totalReimb],
+      ["Épargné (net)", net],
+      ["Reste à vivre", remaining],
+      [],
+      ["Date", "Type", "Catégorie", "Sous-catégorie", "Libellé", "Montant (€)"],
+    ];
+    const monthMovements = [];
+    (m.expenses || []).forEach((e) => {
+      const isReimb = e.kind === "reimbursement";
+      monthMovements.push([e.date, isReimb ? "Remboursement" : "Dépense", catName(e.categoryId), e.subcategory || "", e.label || "", isReimb ? -e.amount : e.amount]);
+    });
+    (m.transfers || []).forEach((t) => {
+      const isW = t.type === "withdrawal";
+      monthMovements.push([t.date, isW ? "Retrait épargne" : "Épargne", t.projectName || "Épargne", "", t.note || "", isW ? t.amount : -t.amount]);
+    });
+    monthMovements.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    rows.push(...monthMovements);
+
+    const monthSheet = XLSX.utils.aoa_to_sheet(rows);
+    monthSheet["!cols"] = [{ wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 28 }, { wch: 12 }];
+
+    let name = sheetSafeName(capitalize(monthLabel(mk)));
+    let suffix = 2;
+    while (usedNames.has(name)) { name = sheetSafeName(`${capitalize(monthLabel(mk))} (${suffix})`); suffix++; }
+    usedNames.add(name);
+    XLSX.utils.book_append_sheet(wb, monthSheet, name);
   });
+
   const recapSheet = XLSX.utils.aoa_to_sheet([["Mois", "Revenu", "Dépensé net", "Remboursé", "Épargné (net)", "Reste à vivre"], ...recapRows]);
   recapSheet["!cols"] = [{ wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 14 }];
 
@@ -564,9 +588,7 @@ function buildExcelWorkbook(data) {
   const catSheet = XLSX.utils.aoa_to_sheet([["Catégorie", "Total (€)"], ...catRows]);
   catSheet["!cols"] = [{ wch: 22 }, { wch: 14 }];
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, movementsSheet, "Mouvements");
-  XLSX.utils.book_append_sheet(wb, recapSheet, "Récap mensuel");
+  XLSX.utils.book_append_sheet(wb, recapSheet, "Récap annuel");
   XLSX.utils.book_append_sheet(wb, catSheet, "Répartition catégories");
   return wb;
 }
@@ -1406,14 +1428,19 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
     URL.revokeObjectURL(url);
   }
   function handleExportExcel() {
-    const wb = buildExcelWorkbook(data);
-    const wbout = XLSX.write(wb, { type: "array", bookType: "xlsx" });
-    const blob = new Blob([wbout], { type: "application/octet-stream" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `carnet-export-${todayISO()}.xlsx`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    try {
+      if (typeof XLSX === "undefined") throw new Error("La librairie Excel (vendor/xlsx.full.min.js) n'est pas chargée. Vérifie qu'elle est bien présente dans ton dossier vendor sur GitHub.");
+      const wb = buildExcelWorkbook(data);
+      const wbout = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+      const blob = new Blob([wbout], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `carnet-export-${todayISO()}.xlsx`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setImportError(e.message);
+    }
   }
   function handleFile(e) {
     const file = e.target.files?.[0];
