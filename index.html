@@ -1465,7 +1465,7 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
     <Sheet title="Sauvegarde" onClose={onClose}>
       <div className="empty-hint">Tes données sont déjà enregistrées localement sur cet appareil (stockage du navigateur), indépendamment de toute connexion.</div>
       <button className="primary-btn" onClick={handleExport}><Download size={16} style={{ marginRight: 6, verticalAlign: -3 }} /> Exporter en .json</button>
-      <button className="ghost-btn" onClick={handleExportExcel}><Download size={15} /> Exporter en .xlsx</button>
+      <button className="primary-btn" onClick={handleExportExcel}><Download size={16} style={{ marginRight: 6, verticalAlign: -3 }} /> Exporter en .xlsx</button>
       <div>
         <div className="field-label" style={{ marginBottom: 8 }}>Importer un fichier</div>
         <button className="ghost-btn" onClick={() => fileRef.current?.click()}><Upload size={15} /> Choisir un fichier .json</button>
