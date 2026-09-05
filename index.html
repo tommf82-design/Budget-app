@@ -375,23 +375,56 @@ function compareMovements(a, b) {
   if (a.date !== b.date) return a.date < b.date ? 1 : -1;
   return (b.createdAt || 0) - (a.createdAt || 0);
 }
-async function ghListVersions(gh, limit) {
+function ghBackupDir(gh) {
+  const dir = gh.path.includes("/") ? gh.path.slice(0, gh.path.lastIndexOf("/") + 1) : "";
+  return `${dir}backups`;
+}
+function ghBackupName() {
+  return new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+}
+async function ghListBackups(gh) {
   const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
   if (!owner || !repo) throw new Error("Dépôt invalide (attendu utilisateur/depot)");
   if (!gh.token) throw new Error("Ajoute ton token d'accès personnel");
-  const url = `https://api.github.com/repos/${owner}/${repo}/commits?path=${encodeURIComponent(gh.path)}&sha=${gh.branch}&per_page=${limit || 20}`;
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghBackupDir(gh)}?ref=${gh.branch}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json" } });
-  if (!res.ok) throw new Error(`Historique introuvable (${res.status})`);
-  const j = await res.json();
-  return j.map((c) => ({ sha: c.sha, date: c.commit?.author?.date, message: c.commit?.message }));
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(`Liste des sauvegardes introuvable (${res.status})`);
+  const arr = await res.json();
+  if (!Array.isArray(arr)) return [];
+  return arr.filter((f) => f.type === "file" && f.name.endsWith(".json")).sort((a, b) => (a.name < b.name ? 1 : -1));
 }
-async function ghGetFileAtRef(gh, ref) {
+async function ghGetBackupContent(gh, path) {
   const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${gh.path}?ref=${ref}`;
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${gh.branch}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json" } });
-  if (!res.ok) throw new Error(`Version introuvable (${res.status})`);
+  if (!res.ok) throw new Error(`Sauvegarde introuvable (${res.status})`);
   const j = await res.json();
   return JSON.parse(b64DecodeUtf8(j.content.replace(/\n/g, "")));
+}
+async function ghDeleteFile(gh, path, sha) {
+  const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+    body: JSON.stringify({ message: "Nettoyage ancienne sauvegarde Carnet", sha, branch: gh.branch }),
+  });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.message || `Échec de la suppression (${res.status})`); }
+}
+async function ghWriteBackupAndPrune(gh, data, keep) {
+  const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
+  const path = `${ghBackupDir(gh)}/${ghBackupName()}`;
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+    body: JSON.stringify({ message: `Sauvegarde Carnet — ${new Date().toLocaleString("fr-FR")}`, content: b64EncodeUtf8(JSON.stringify(data, null, 2)), branch: gh.branch }),
+  });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.message || `Échec de la sauvegarde (${res.status})`); }
+  const files = await ghListBackups(gh).catch(() => []);
+  const toDelete = files.slice(keep || 20);
+  for (const f of toDelete) { await ghDeleteFile(gh, f.path, f.sha).catch(() => {}); }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1454,6 +1487,7 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
     setGhStatus({ type: "loading", message: "Envoi en cours…" });
     try {
       await ghPutFile(gh, data, existingSha);
+      ghWriteBackupAndPrune(gh, data, 20).catch(() => {});
       setGhStatus({ type: "success", message: "Envoyé sur GitHub." });
     } catch (e) { setGhStatus({ type: "error", message: e.message }); }
   }
@@ -1654,51 +1688,54 @@ function LockScreen({ pinHash, onUnlock }) {
   );
 }
 
-function formatVersionDate(iso) {
-  const d = new Date(iso);
+function formatVersionDate(name) {
+  // Filenames look like 2026-09-05T14-32-10-123Z.json — rebuild a parseable ISO string.
+  const match = name.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/);
+  if (!match) return name;
+  const d = new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z`);
+  if (isNaN(d.getTime())) return name;
   return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" }) + " à " + d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
 }
 
 function RestoreVersionSheet({ gh, onClose, onPick }) {
   const [versions, setVersions] = useState(null);
   const [error, setError] = useState("");
-  const [loadingSha, setLoadingSha] = useState(null);
+  const [loadingPath, setLoadingPath] = useState(null);
 
   useEffect(() => {
     (async () => {
       try {
-        const list = await ghListVersions(gh, 20);
+        const list = await ghListBackups(gh);
         setVersions(list);
       } catch (e) { setError(e.message); }
     })();
   }, []);
 
-  async function pick(sha) {
-    setLoadingSha(sha);
+  async function pick(path) {
+    setLoadingPath(path);
     try {
-      const versionData = await ghGetFileAtRef(gh, sha);
+      const versionData = await ghGetBackupContent(gh, path);
       onPick(versionData);
-    } catch (e) { setError(e.message); setLoadingSha(null); }
+    } catch (e) { setError(e.message); setLoadingPath(null); }
   }
 
   return (
     <Sheet title="Versions précédentes" onClose={onClose}>
-      <div className="empty-hint">Chaque envoi vers GitHub garde une trace. Choisis un point dans le temps pour prévisualiser puis restaurer.</div>
+      <div className="empty-hint">Chaque envoi (manuel ou automatique) garde une sauvegarde horodatée, jusqu'à 20 au maximum — les plus anciennes sont supprimées automatiquement. Choisis un point dans le temps pour restaurer.</div>
       {error && <div className="danger-text">{error}</div>}
       {!versions && !error && <div className="empty-hint">Chargement…</div>}
-      {versions && versions.length === 0 && <div className="empty-hint">Aucun historique trouvé pour ce fichier.</div>}
+      {versions && versions.length === 0 && <div className="empty-hint">Aucune sauvegarde trouvée pour l'instant. Elles apparaîtront ici après le prochain envoi vers GitHub.</div>}
       {versions && versions.length > 0 && (
         <ul className="expense-list">
           {versions.map((v, i) => (
-            <li className="expense-row" key={v.sha}>
+            <li className="expense-row" key={v.path}>
               <div className="expense-click static">
                 <div className="expense-main">
-                  <div className="expense-label">{formatVersionDate(v.date)}{i === 0 && <span className="pill">Actuelle</span>}</div>
-                  <div className="expense-meta">{v.message}</div>
+                  <div className="expense-label">{formatVersionDate(v.name)}{i === 0 && <span className="pill">Plus récente</span>}</div>
                 </div>
               </div>
-              <button className="ghost-btn small" style={{ marginTop: 0, width: "auto", padding: "7px 12px" }} disabled={loadingSha === v.sha} onClick={() => pick(v.sha)}>
-                {loadingSha === v.sha ? "…" : "Voir"}
+              <button className="ghost-btn small" style={{ marginTop: 0, width: "auto", padding: "7px 12px" }} disabled={loadingPath === v.path} onClick={() => pick(v.path)}>
+                {loadingPath === v.path ? "…" : "Voir"}
               </button>
             </li>
           ))}
@@ -1834,6 +1871,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
           return;
         }
         await ghPutFile(gh, data, existing?.sha);
+        ghWriteBackupAndPrune(gh, data, 20).catch(() => {});
         setLastSync({ type: "success", message: `Synchronisé à ${new Date().toLocaleTimeString("fr-FR")}` });
       } catch (e) {
         setLastSync({ type: "error", message: `Échec de la synchro auto : ${e.message}` });
