@@ -245,6 +245,7 @@ const Copy = (p) => <Icon {...p}><rect x="9" y="9" width="11" height="11" rx="2"
 const Link2 = (p) => <Icon {...p}><rect x="2" y="8" width="9" height="8" rx="4" /><rect x="13" y="8" width="9" height="8" rx="4" /></Icon>;
 const History = (p) => <Icon {...p}><path d="M3 12a9 9 0 1 0 2.6-6.3" /><polyline points="3 5 3 10 8 10" /><polyline points="12 8 12 12 15 14" /></Icon>;
 const Palette = (p) => <Icon {...p}><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.7-.9 1.2-1.8-.3-.5-.1-1.2.5-1.4.6-.2 1.3-.1 1.9.3.9.6 2.1.1 2.1-1A9 9 0 0 0 12 3z" /><circle cx="7.5" cy="10.5" r="1.1" fill={p.color || "currentColor"} stroke="none" /><circle cx="12" cy="7.2" r="1.1" fill={p.color || "currentColor"} stroke="none" /><circle cx="16.3" cy="10.5" r="1.1" fill={p.color || "currentColor"} stroke="none" /></Icon>;
+const Lock = (p) => <Icon {...p}><rect x="4" y="10.5" width="16" height="10" rx="2" /><path d="M7.5 10.5V7.2a4.5 4.5 0 0 1 9 0v3.3" /></Icon>;
 
 /* ---------------------------------------------------------------------- */
 /* Lightweight charts (no external charting library)                       */
@@ -352,6 +353,75 @@ async function ghPutFile(gh, dataObj, sha) {
   });
   if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.message || `Échec de l'envoi (${res.status})`); }
 }
+
+/* ---------------------------------------------------------------------- */
+/* Client-side encryption for GitHub-synced data (AES-GCM + PBKDF2).       */
+/* The passphrase itself is never stored; only the salt travels with the  */
+/* encrypted payload so any device can derive the same key from it.       */
+/* ---------------------------------------------------------------------- */
+
+function b64FromBytes(bytes) {
+  let bin = "";
+  bytes.forEach((b) => { bin += String.fromCharCode(b); });
+  return btoa(bin);
+}
+function bytesFromB64(b64) {
+  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+}
+async function deriveKey(passphrase, saltBytes) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: saltBytes, iterations: 150000, hash: "SHA-256" },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+async function encryptPayload(key, saltBytes, plainObj) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const enc = new TextEncoder();
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, enc.encode(JSON.stringify(plainObj)));
+  return { carnetEncrypted: true, salt: b64FromBytes(saltBytes), iv: b64FromBytes(iv), ciphertext: b64FromBytes(new Uint8Array(ciphertext)) };
+}
+async function decryptPayload(key, wrapper) {
+  const iv = bytesFromB64(wrapper.iv);
+  const ciphertextBytes = bytesFromB64(wrapper.ciphertext);
+  let plainBuf;
+  try {
+    plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertextBytes);
+  } catch (e) {
+    throw new Error("Mot de passe incorrect.");
+  }
+  return JSON.parse(new TextDecoder().decode(plainBuf));
+}
+
+class EncryptionLockedError extends Error {}
+
+// Read a file from GitHub, transparently decrypting it if it's an encrypted
+// Carnet payload. Throws EncryptionLockedError if encrypted but no session key.
+async function ghGetFileDecrypted(gh, encKey) {
+  const res = await ghGetFile(gh);
+  if (!res) return null;
+  if (res.data && res.data.carnetEncrypted) {
+    if (!encKey) throw new EncryptionLockedError("Chiffrement verrouillé — déverrouille pour synchroniser.");
+    return { sha: res.sha, data: await decryptPayload(encKey, res.data) };
+  }
+  return res;
+}
+// Write a file to GitHub, transparently encrypting it if encryption is enabled.
+async function ghPutFileEncrypted(gh, dataObj, sha, encConfig, encKey) {
+  if (encConfig && encConfig.enabled) {
+    if (!encKey) throw new EncryptionLockedError("Chiffrement verrouillé — déverrouille pour synchroniser.");
+    const saltBytes = bytesFromB64(encConfig.salt);
+    const wrapper = await encryptPayload(encKey, saltBytes, dataObj);
+    await ghPutFile(gh, wrapper, sha);
+  } else {
+    await ghPutFile(gh, dataObj, sha);
+  }
+}
+
 function countRecords(data) {
   if (!data) return 0;
   let n = 0;
@@ -365,11 +435,10 @@ function countRecords(data) {
 }
 function isRemoteAhead(remoteData, localData) {
   if (!remoteData) return false;
-  const remoteCount = countRecords(remoteData);
-  const localCount = countRecords(localData);
-  if (remoteCount > localCount) return true;
-  if (remoteCount === localCount && (remoteData.updatedAt || 0) > (localData.updatedAt || 0)) return true;
-  return false;
+  const remoteUpdated = remoteData.updatedAt || 0;
+  const localUpdated = localData.updatedAt || 0;
+  if (remoteUpdated !== localUpdated) return remoteUpdated > localUpdated;
+  return countRecords(remoteData) > countRecords(localData);
 }
 function compareMovements(a, b) {
   if (a.date !== b.date) return a.date < b.date ? 1 : -1;
@@ -394,13 +463,18 @@ async function ghListBackups(gh) {
   if (!Array.isArray(arr)) return [];
   return arr.filter((f) => f.type === "file" && f.name.endsWith(".json")).sort((a, b) => (a.name < b.name ? 1 : -1));
 }
-async function ghGetBackupContent(gh, path) {
+async function ghGetBackupContent(gh, path, encKey) {
   const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
   const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${gh.branch}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json" } });
   if (!res.ok) throw new Error(`Sauvegarde introuvable (${res.status})`);
   const j = await res.json();
-  return JSON.parse(b64DecodeUtf8(j.content.replace(/\n/g, "")));
+  const parsed = JSON.parse(b64DecodeUtf8(j.content.replace(/\n/g, "")));
+  if (parsed && parsed.carnetEncrypted) {
+    if (!encKey) throw new EncryptionLockedError("Chiffrement verrouillé — déverrouille pour restaurer.");
+    return decryptPayload(encKey, parsed);
+  }
+  return parsed;
 }
 async function ghDeleteFile(gh, path, sha) {
   const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
@@ -412,14 +486,22 @@ async function ghDeleteFile(gh, path, sha) {
   });
   if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.message || `Échec de la suppression (${res.status})`); }
 }
-async function ghWriteBackupAndPrune(gh, data, keep) {
+async function ghWriteBackupAndPrune(gh, data, keep, encConfig, encKey) {
   const [owner, repo] = (gh.repo || "").split("/").map((s) => s.trim());
   const path = `${ghBackupDir(gh)}/${ghBackupName()}`;
   const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+  let content;
+  if (encConfig && encConfig.enabled) {
+    if (!encKey) throw new EncryptionLockedError("Chiffrement verrouillé.");
+    const wrapper = await encryptPayload(encKey, bytesFromB64(encConfig.salt), data);
+    content = b64EncodeUtf8(JSON.stringify(wrapper, null, 2));
+  } else {
+    content = b64EncodeUtf8(JSON.stringify(data, null, 2));
+  }
   const res = await fetch(url, {
     method: "PUT",
     headers: { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
-    body: JSON.stringify({ message: `Sauvegarde Carnet — ${new Date().toLocaleString("fr-FR")}`, content: b64EncodeUtf8(JSON.stringify(data, null, 2)), branch: gh.branch }),
+    body: JSON.stringify({ message: `Sauvegarde Carnet — ${new Date().toLocaleString("fr-FR")}`, content, branch: gh.branch }),
   });
   if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.message || `Échec de la sauvegarde (${res.status})`); }
   const files = await ghListBackups(gh).catch(() => []);
@@ -1419,6 +1501,116 @@ function RecapTab({ data, categories, year, setYear }) {
 /* Backup / GitHub sync sheet                                              */
 /* ---------------------------------------------------------------------- */
 
+function EncryptionSheet({ gh, encConfig, encKey, onClose, onEnable, onUnlock, onChangePassphrase, onDisable }) {
+  const [mode, setMode] = useState(null); // null | "checking" | "create" | "join" | "unlock" | "change"
+  const [pass, setPass] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [oldPass, setOldPass] = useState("");
+  const [existingSalt, setExistingSalt] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function startActivate() {
+    setMode("checking"); setError("");
+    try {
+      const existing = await ghGetFile(gh);
+      if (existing && existing.data && existing.data.carnetEncrypted) { setExistingSalt(existing.data.salt); setMode("join"); }
+      else setMode("create");
+    } catch (e) { setError(e.message); setMode(null); }
+  }
+
+  async function submitCreate() {
+    if (pass.length < 6) { setError("6 caractères minimum."); return; }
+    if (pass !== pass2) { setError("Les deux mots de passe ne correspondent pas."); return; }
+    setBusy(true); setError("");
+    try { await onEnable(pass, null); onClose(); }
+    catch (e) { setError(e.message); }
+    setBusy(false);
+  }
+  async function submitJoin() {
+    setBusy(true); setError("");
+    try { await onEnable(pass, existingSalt); onClose(); }
+    catch (e) { setError(e.message); }
+    setBusy(false);
+  }
+  async function submitUnlock() {
+    setBusy(true); setError("");
+    try { await onUnlock(pass); onClose(); }
+    catch (e) { setError(e.message); }
+    setBusy(false);
+  }
+  async function submitChange() {
+    if (pass.length < 6) { setError("6 caractères minimum."); return; }
+    if (pass !== pass2) { setError("Les deux mots de passe ne correspondent pas."); return; }
+    setBusy(true); setError("");
+    try { await onChangePassphrase(oldPass, pass); onClose(); }
+    catch (e) { setError(e.message); }
+    setBusy(false);
+  }
+
+  if (!encConfig || !encConfig.enabled) {
+    if (mode === "create") {
+      return (
+        <Sheet title="Créer un mot de passe" onClose={onClose}>
+          <div className="empty-hint">Ce mot de passe chiffre tes données avant l'envoi vers GitHub. Il n'est jamais stocké ni envoyé nulle part. Si tu l'oublies, tes sauvegardes chiffrées deviennent illisibles (tes données locales sur cet appareil ne sont pas concernées).</div>
+          <Field label="Nouveau mot de passe (6 caractères minimum)"><input className="text-input" type="password" autoFocus value={pass} onChange={(e) => { setPass(e.target.value); setError(""); }} /></Field>
+          <Field label="Confirme le mot de passe"><input className="text-input" type="password" value={pass2} onChange={(e) => { setPass2(e.target.value); setError(""); }} onKeyDown={(e) => e.key === "Enter" && submitCreate()} /></Field>
+          {error && <div className="danger-text">{error}</div>}
+          <button className="primary-btn" disabled={busy} onClick={submitCreate}>{busy ? "…" : "Activer le chiffrement"}</button>
+        </Sheet>
+      );
+    }
+    if (mode === "join") {
+      return (
+        <Sheet title="Rejoindre le chiffrement existant" onClose={onClose}>
+          <div className="empty-hint">Tes données sur GitHub sont déjà chiffrées (probablement depuis un autre appareil). Entre le même mot de passe pour pouvoir synchroniser depuis celui-ci.</div>
+          <Field label="Mot de passe"><input className="text-input" type="password" autoFocus value={pass} onChange={(e) => { setPass(e.target.value); setError(""); }} onKeyDown={(e) => e.key === "Enter" && submitJoin()} /></Field>
+          {error && <div className="danger-text">{error}</div>}
+          <button className="primary-btn" disabled={busy} onClick={submitJoin}>{busy ? "…" : "Déverrouiller"}</button>
+        </Sheet>
+      );
+    }
+    return (
+      <Sheet title="Chiffrement" onClose={onClose}>
+        <div className="empty-hint">Protège tes données par un mot de passe avant qu'elles ne quittent cet appareil vers GitHub — même en cas de fuite ou de dépôt rendu public par erreur, elles resteraient illisibles sans ce mot de passe.</div>
+        {error && <div className="danger-text">{error}</div>}
+        <button className="primary-btn" disabled={mode === "checking"} onClick={startActivate}>{mode === "checking" ? "Vérification…" : "Activer le chiffrement"}</button>
+      </Sheet>
+    );
+  }
+
+  if (!encKey && mode !== "change") {
+    return (
+      <Sheet title="Déverrouiller" onClose={onClose}>
+        <div className="empty-hint">Le chiffrement est activé sur ce compte. Entre ton mot de passe pour synchroniser depuis cet appareil pendant cette session.</div>
+        <Field label="Mot de passe"><input className="text-input" type="password" autoFocus value={pass} onChange={(e) => { setPass(e.target.value); setError(""); }} onKeyDown={(e) => e.key === "Enter" && submitUnlock()} /></Field>
+        {error && <div className="danger-text">{error}</div>}
+        <button className="primary-btn" disabled={busy} onClick={submitUnlock}>{busy ? "…" : "Déverrouiller"}</button>
+      </Sheet>
+    );
+  }
+
+  if (mode === "change") {
+    return (
+      <Sheet title="Changer le mot de passe" onClose={onClose}>
+        <Field label="Mot de passe actuel"><input className="text-input" type="password" autoFocus value={oldPass} onChange={(e) => { setOldPass(e.target.value); setError(""); }} /></Field>
+        <Field label="Nouveau mot de passe"><input className="text-input" type="password" value={pass} onChange={(e) => { setPass(e.target.value); setError(""); }} /></Field>
+        <Field label="Confirme le nouveau mot de passe"><input className="text-input" type="password" value={pass2} onChange={(e) => { setPass2(e.target.value); setError(""); }} onKeyDown={(e) => e.key === "Enter" && submitChange()} /></Field>
+        {error && <div className="danger-text">{error}</div>}
+        <button className="primary-btn" disabled={busy} onClick={submitChange}>{busy ? "…" : "Changer le mot de passe"}</button>
+      </Sheet>
+    );
+  }
+
+  return (
+    <Sheet title="Chiffrement" onClose={onClose}>
+      <div className="empty-hint">Le chiffrement est actif et déverrouillé pour cette session. Toutes les prochaines synchronisations seront chiffrées.</div>
+      <button className="ghost-btn" onClick={() => setMode("change")}>Changer le mot de passe</button>
+      <button className="danger-btn ghost" onClick={onDisable}><Trash2 size={14} /> Désactiver le chiffrement</button>
+    </Sheet>
+  );
+}
+
 function ThemeSheet({ theme, onPick, onClose }) {
   return (
     <Sheet title="Thème" onClose={onClose}>
@@ -1441,7 +1633,7 @@ function ThemeSheet({ theme, onPick, onClose }) {
   );
 }
 
-function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, gh, updateGh, lastSync }) {
+function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, gh, updateGh, lastSync, encConfig, encKey, onEnableEncryption, onUnlockEncryption, onChangePassphrase, onDisableEncryption }) {
   const fileRef = useRef(null);
   const [importError, setImportError] = useState("");
   const [confirmImport, setConfirmImport] = useState(null);
@@ -1451,6 +1643,7 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
   const [confirmOverwrite, setConfirmOverwrite] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showImportExcel, setShowImportExcel] = useState(false);
+  const [showEncryption, setShowEncryption] = useState(false);
 
   function handleExport() {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
@@ -1486,31 +1679,40 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
   async function doPush(existingSha) {
     setGhStatus({ type: "loading", message: "Envoi en cours…" });
     try {
-      await ghPutFile(gh, data, existingSha);
-      ghWriteBackupAndPrune(gh, data, 20).catch(() => {});
+      await ghPutFileEncrypted(gh, data, existingSha, encConfig, encKey);
+      ghWriteBackupAndPrune(gh, data, 20, encConfig, encKey).catch(() => {});
       setGhStatus({ type: "success", message: "Envoyé sur GitHub." });
-    } catch (e) { setGhStatus({ type: "error", message: e.message }); }
+    } catch (e) {
+      if (e instanceof EncryptionLockedError) setGhStatus({ type: "error", message: "Déverrouille le chiffrement (ci-dessous) avant d'envoyer." });
+      else setGhStatus({ type: "error", message: e.message });
+    }
   }
   async function pushToGithub() {
     setGhStatus({ type: "loading", message: "Vérification…" });
     try {
-      const existing = await ghGetFile(gh);
+      const existing = await ghGetFileDecrypted(gh, encKey);
       if (existing && isRemoteAhead(existing.data, data)) {
         setGhStatus(null);
         setConfirmOverwrite({ sha: existing.sha, remoteCount: countRecords(existing.data), localCount: countRecords(data) });
         return;
       }
       await doPush(existing?.sha);
-    } catch (e) { setGhStatus({ type: "error", message: e.message }); }
+    } catch (e) {
+      if (e instanceof EncryptionLockedError) setGhStatus({ type: "error", message: "Déverrouille le chiffrement (ci-dessous) avant d'envoyer." });
+      else setGhStatus({ type: "error", message: e.message });
+    }
   }
   async function pullFromGithub() {
     setGhStatus({ type: "loading", message: "Récupération en cours…" });
     try {
-      const remote = await ghGetFile(gh);
+      const remote = await ghGetFileDecrypted(gh, encKey);
       if (!remote) throw new Error("Fichier introuvable sur GitHub.");
       setConfirmImport(remote.data);
       setGhStatus(null);
-    } catch (e) { setGhStatus({ type: "error", message: e.message }); }
+    } catch (e) {
+      if (e instanceof EncryptionLockedError) setGhStatus({ type: "error", message: "Déverrouille le chiffrement (ci-dessous) avant de charger." });
+      else setGhStatus({ type: "error", message: e.message });
+    }
   }
   function copyLink() {
     try {
@@ -1556,12 +1758,15 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
         </div>
         <button className="ghost-btn small" style={{ width: "100%" }} onClick={copyLink}><Copy size={13} /> Copier le lien du fichier</button>
         <button className="ghost-btn small" style={{ width: "100%" }} onClick={() => setShowHistory(true)}><History size={13} /> Restaurer une version précédente</button>
+        <button className="ghost-btn small" style={{ width: "100%" }} onClick={() => setShowEncryption(true)}>
+          <Lock size={13} /> {encConfig?.enabled ? (encKey ? "Chiffrement activé (déverrouillé)" : "Chiffrement activé — verrouillé") : "Activer le chiffrement"}
+        </button>
         {lastSync && !ghStatus && <div className={`sync-status ${lastSync.type}`}>{lastSync.message}</div>}
         {ghStatus && <div className={`sync-status ${ghStatus.type}`}>{ghStatus.message}</div>}
         {confirmOverwrite && (
           <div className="danger-zone">
             <div className="danger-text">
-              La version sur GitHub contient plus de mouvements ({confirmOverwrite.remoteCount}) que ta version locale ({confirmOverwrite.localCount}). L'écraser quand même ? Astuce : essaie plutôt "Charger" pour récupérer la version la plus complète, ou "Restaurer une version précédente" pour comparer.
+              La version sur GitHub a été modifiée plus récemment que ta version locale (elle contient {confirmOverwrite.remoteCount} mouvement(s), contre {confirmOverwrite.localCount} ici). L'écraser quand même ? Astuce : essaie plutôt "Charger" pour récupérer la version la plus récente, ou "Restaurer une version précédente" pour comparer.
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button className="ghost-btn small" style={{ flex: 1 }} onClick={() => setConfirmOverwrite(null)}>Annuler</button>
@@ -1579,8 +1784,18 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
           </div>
         </div>
       )}
-      {showHistory && <RestoreVersionSheet gh={gh} onClose={() => setShowHistory(false)} onPick={(versionData) => { setConfirmImport(versionData); setShowHistory(false); }} />}
+      {showHistory && <RestoreVersionSheet gh={gh} encKey={encKey} onClose={() => setShowHistory(false)} onPick={(versionData) => { setConfirmImport(versionData); setShowHistory(false); }} />}
       {showImportExcel && <ImportExcelSheet data={data} onClose={() => setShowImportExcel(false)} onImport={onImport} />}
+      {showEncryption && (
+        <EncryptionSheet
+          gh={gh} encConfig={encConfig} encKey={encKey}
+          onClose={() => setShowEncryption(false)}
+          onEnable={onEnableEncryption}
+          onUnlock={onUnlockEncryption}
+          onChangePassphrase={onChangePassphrase}
+          onDisable={() => { onDisableEncryption(); setShowEncryption(false); }}
+        />
+      )}
 
       <div style={{ height: 1, background: "var(--line)", margin: "4px 0" }} />
 
@@ -1697,7 +1912,7 @@ function formatVersionDate(name) {
   return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" }) + " à " + d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
 }
 
-function RestoreVersionSheet({ gh, onClose, onPick }) {
+function RestoreVersionSheet({ gh, encKey, onClose, onPick }) {
   const [versions, setVersions] = useState(null);
   const [error, setError] = useState("");
   const [loadingPath, setLoadingPath] = useState(null);
@@ -1714,9 +1929,12 @@ function RestoreVersionSheet({ gh, onClose, onPick }) {
   async function pick(path) {
     setLoadingPath(path);
     try {
-      const versionData = await ghGetBackupContent(gh, path);
+      const versionData = await ghGetBackupContent(gh, path, encKey);
       onPick(versionData);
-    } catch (e) { setError(e.message); setLoadingPath(null); }
+    } catch (e) {
+      setError(e instanceof EncryptionLockedError ? "Chiffrement verrouillé — déverrouille-le d'abord (bouton Chiffrement)." : e.message);
+      setLoadingPath(null);
+    }
   }
 
   return (
@@ -1834,6 +2052,61 @@ function App({ pinHash, onSetPin, onClearPin }) {
 
   const [gh, setGhState] = useState(null);
   const [lastSync, setLastSync] = useState(null);
+  const [encConfig, setEncConfigState] = useState(null); // { enabled, salt } | null
+  const [encKey, setEncKey] = useState(null); // CryptoKey, session-only, never persisted
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.storage.get("encryption-config");
+        setEncConfigState(res && res.value ? JSON.parse(res.value) : { enabled: false, salt: null });
+      } catch (e) { setEncConfigState({ enabled: false, salt: null }); }
+    })();
+  }, []);
+  function saveEncConfig(next) {
+    setEncConfigState(next);
+    window.storage.set("encryption-config", JSON.stringify(next)).catch(() => {});
+  }
+  async function handleEnableEncryption(passphrase, existingSaltB64) {
+    let saltBytes;
+    if (existingSaltB64) {
+      saltBytes = bytesFromB64(existingSaltB64);
+      const key = await deriveKey(passphrase, saltBytes);
+      // Verify the passphrase by attempting to decrypt the current remote file.
+      const remote = await ghGetFile(gh);
+      if (remote && remote.data && remote.data.carnetEncrypted) await decryptPayload(key, remote.data);
+      setEncKey(key);
+      saveEncConfig({ enabled: true, salt: existingSaltB64 });
+    } else {
+      saltBytes = crypto.getRandomValues(new Uint8Array(16));
+      const key = await deriveKey(passphrase, saltBytes);
+      setEncKey(key);
+      saveEncConfig({ enabled: true, salt: b64FromBytes(saltBytes) });
+    }
+  }
+  async function handleUnlockEncryption(passphrase) {
+    const saltBytes = bytesFromB64(encConfig.salt);
+    const key = await deriveKey(passphrase, saltBytes);
+    const remote = await ghGetFile(gh);
+    if (remote && remote.data && remote.data.carnetEncrypted) await decryptPayload(key, remote.data);
+    setEncKey(key);
+  }
+  async function handleChangePassphrase(oldPassphrase, newPassphrase) {
+    const oldSalt = bytesFromB64(encConfig.salt);
+    const oldKey = await deriveKey(oldPassphrase, oldSalt);
+    const remote = await ghGetFile(gh);
+    if (remote && remote.data && remote.data.carnetEncrypted) await decryptPayload(oldKey, remote.data);
+    const newSalt = crypto.getRandomValues(new Uint8Array(16));
+    const newKey = await deriveKey(newPassphrase, newSalt);
+    const newConfig = { enabled: true, salt: b64FromBytes(newSalt) };
+    await ghPutFileEncrypted(gh, data, remote?.sha, newConfig, newKey);
+    setEncKey(newKey);
+    saveEncConfig(newConfig);
+  }
+  function handleDisableEncryption() {
+    saveEncConfig({ enabled: false, salt: null });
+    setEncKey(null);
+  }
 
   useEffect(() => {
     (async () => {
@@ -1864,21 +2137,22 @@ function App({ pinHash, onSetPin, onClearPin }) {
     if (pushTimer.current) clearTimeout(pushTimer.current);
     pushTimer.current = setTimeout(async () => {
       try {
-        const existing = await ghGetFile(gh).catch(() => null);
+        const existing = await ghGetFileDecrypted(gh, encKey).catch((e) => { if (e instanceof EncryptionLockedError) throw e; return null; });
         if (existing && isRemoteAhead(existing.data, data)) {
           persist(existing.data);
           setLastSync({ type: "success", message: `Version plus récente chargée depuis GitHub à ${new Date().toLocaleTimeString("fr-FR")}` });
           return;
         }
-        await ghPutFile(gh, data, existing?.sha);
-        ghWriteBackupAndPrune(gh, data, 20).catch(() => {});
+        await ghPutFileEncrypted(gh, data, existing?.sha, encConfig, encKey);
+        ghWriteBackupAndPrune(gh, data, 20, encConfig, encKey).catch(() => {});
         setLastSync({ type: "success", message: `Synchronisé à ${new Date().toLocaleTimeString("fr-FR")}` });
       } catch (e) {
-        setLastSync({ type: "error", message: `Échec de la synchro auto : ${e.message}` });
+        if (e instanceof EncryptionLockedError) setLastSync({ type: "error", message: "Synchro en pause : chiffrement verrouillé. Déverrouille-le dans Sauvegarde." });
+        else setLastSync({ type: "error", message: `Échec de la synchro auto : ${e.message}` });
       }
     }, 4000);
     return () => { if (pushTimer.current) clearTimeout(pushTimer.current); };
-  }, [data, gh]);
+  }, [data, gh, encKey, encConfig]);
 
   // Check for a newer version on GitHub when the app opens or comes back to the
   // foreground, and load it automatically — no confirmation needed.
@@ -1887,19 +2161,19 @@ function App({ pinHash, onSetPin, onClearPin }) {
     let cancelled = false;
     async function check() {
       try {
-        const remote = await ghGetFile(gh);
+        const remote = await ghGetFileDecrypted(gh, encKey);
         if (!cancelled && isRemoteAhead(remote?.data, data)) {
           persist(remote.data);
           setLastSync({ type: "success", message: `Version plus récente chargée depuis GitHub à ${new Date().toLocaleTimeString("fr-FR")}` });
         }
-      } catch (e) { /* silent: manual Charger button remains available */ }
+      } catch (e) { /* silent (incl. locked encryption): manual Charger/Déverrouiller remain available */ }
     }
     check();
     function onVis() { if (document.visibilityState === "visible") check(); }
     document.addEventListener("visibilitychange", onVis);
     return () => { cancelled = true; document.removeEventListener("visibilitychange", onVis); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gh, data?.updatedAt]);
+  }, [gh, data?.updatedAt, encKey]);
 
   const updateMonth = useCallback((key, monthData) => { if (!data) return; persist({ ...data, months: { ...data.months, [key]: monthData } }); }, [data, persist]);
   const catActions = {
@@ -1960,7 +2234,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
         <button className={`tab-btn ${tab === "epargne" ? "active" : ""}`} onClick={() => setTab("epargne")}><PiggyBank size={19} /><span>Épargne</span></button>
         <button className={`tab-btn ${tab === "recap" ? "active" : ""}`} onClick={() => setTab("recap")}><BarChart3 size={19} /><span>Récap</span></button>
       </nav>
-      {showBackup && <BackupSheet data={data} onClose={() => setShowBackup(false)} onImport={handleImport} pinHash={pinHash} onSetPin={onSetPin} onClearPin={onClearPin} gh={gh} updateGh={updateGh} lastSync={lastSync} />}
+      {showBackup && <BackupSheet data={data} onClose={() => setShowBackup(false)} onImport={handleImport} pinHash={pinHash} onSetPin={onSetPin} onClearPin={onClearPin} gh={gh} updateGh={updateGh} lastSync={lastSync} encConfig={encConfig} encKey={encKey} onEnableEncryption={handleEnableEncryption} onUnlockEncryption={handleUnlockEncryption} onChangePassphrase={handleChangePassphrase} onDisableEncryption={handleDisableEncryption} />}
       {showTheme && <ThemeSheet theme={theme} onPick={pickTheme} onClose={() => setShowTheme(false)} />}
     </div>
   );
