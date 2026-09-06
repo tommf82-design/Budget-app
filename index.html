@@ -600,6 +600,74 @@ function parseBudgetWorkbook(workbook) {
   return { transactions, monthlyIncome, categoryNames: Array.from(categoryNames), year };
 }
 
+// Shared rule for every Excel importer: if a sheet doesn't carry an explicit
+// per-row date, try to read the month (and year, if present) from the sheet's
+// own name; otherwise fall back to the 1st of the current month.
+const FULL_MONTH_TO_INDEX = { "janvier": 0, "février": 1, "fevrier": 1, "mars": 2, "avril": 3, "mai": 4, "juin": 5, "juillet": 6, "août": 7, "aout": 7, "septembre": 8, "octobre": 9, "novembre": 10, "décembre": 11, "decembre": 11 };
+function guessMonthFromSheetName(name) {
+  const now = new Date();
+  let year = now.getFullYear();
+  const yearMatch = name.match(/\b(20\d{2})\b/);
+  if (yearMatch) year = parseInt(yearMatch[1], 10);
+
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(FULL_MONTH_TO_INDEX)) {
+    if (lower.includes(key)) return { year, monthIndex: FULL_MONTH_TO_INDEX[key] };
+  }
+  const abbrevIdx = MONTH_SHEET_NAMES.findIndex((abbr) => name.includes(abbr));
+  if (abbrevIdx !== -1) return { year, monthIndex: abbrevIdx };
+
+  return { year, monthIndex: now.getMonth() };
+}
+function dateStrForMonth(year, monthIndex) {
+  return `${year}-${String(monthIndex + 1).padStart(2, "0")}-01`;
+}
+
+// Parser for the Microsoft-style "Budget mensuel personnel" template: one
+// sheet per person/month, fixed two-column category blocks (Projeté/Réel),
+// no per-row dates — each sheet becomes a single monthly snapshot.
+function parseMsBudgetWorkbook(workbook) {
+  const transactions = [];
+  const categoryNames = new Set();
+  const incomeByMonthKey = {};
+  let lastYear = new Date().getFullYear();
+
+  const targetSheets = workbook.SheetNames.filter((n) => n.toLowerCase().includes("budget mensuel"));
+
+  targetSheets.forEach((sheetName) => {
+    const ws = workbook.Sheets[sheetName];
+    if (!ws) return;
+    const { year, monthIndex } = guessMonthFromSheetName(sheetName);
+    lastYear = year;
+    const dateStr = dateStrForMonth(year, monthIndex);
+    const monthKey = `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
+
+    function scanCols(labelCol, projCol, actCol) {
+      for (let row = 14; row <= 120; row++) {
+        const label = xlCellStr(ws, `${labelCol}${row}`);
+        if (!label || label === "Sous-total" || label === "0") continue;
+        const proj = xlCellNum(ws, `${projCol}${row}`);
+        const act = xlCellNum(ws, `${actCol}${row}`);
+        if (proj === null && act === null) continue;
+        const val = act !== null ? act : proj;
+        if (val) {
+          transactions.push({ date: dateStr, amount: Math.abs(val), kind: "expense", categoryName: label, note: "" });
+          categoryNames.add(label);
+        }
+      }
+    }
+    scanCols("B", "C", "D");
+    scanCols("G", "H", "I");
+
+    const incomeReal = xlCellNum(ws, "C12");
+    const incomePlanned = xlCellNum(ws, "C7");
+    const val = incomeReal !== null ? incomeReal : incomePlanned;
+    if (val) incomeByMonthKey[monthKey] = (incomeByMonthKey[monthKey] || 0) + val;
+  });
+
+  return { transactions, monthlyIncome: incomeByMonthKey, categoryNames: Array.from(categoryNames), year: lastYear };
+}
+
 function mergeImportedData(data, parsed) {
   const categories = [...data.categories];
   const nameToId = {};
@@ -1977,9 +2045,15 @@ function ImportExcelSheet({ data, onClose, onImport }) {
     reader.onload = () => {
       try {
         const wb = XLSX.read(reader.result, { type: "array", cellDates: true });
-        const parsed = parseBudgetWorkbook(wb);
+        const isAgathe = MONTH_SHEET_NAMES.some((n) => wb.SheetNames.includes(n));
+        const isMsBudget = !isAgathe && wb.SheetNames.some((n) => n.toLowerCase().includes("budget mensuel"));
+        if (!isAgathe && !isMsBudget) {
+          setStatus({ type: "error", message: "Format de fichier non reconnu. Cette fonction prend en charge le modèle « Budget mensuel et annuel » (onglets Jan à Déc) et le modèle « Budget mensuel personnel » (feuilles « Budget mensuel … »)." });
+          return;
+        }
+        const parsed = isAgathe ? parseBudgetWorkbook(wb) : parseMsBudgetWorkbook(wb);
         if (parsed.transactions.length === 0 && Object.keys(parsed.monthlyIncome).length === 0) {
-          setStatus({ type: "error", message: "Aucune donnée trouvée. Vérifie qu'il s'agit bien du modèle « Budget mensuel et annuel », avec des dépenses saisies dans le tableau « Suivi des dépenses » d'au moins un onglet mensuel." });
+          setStatus({ type: "error", message: "Aucune donnée trouvée dans ce fichier." });
           return;
         }
         const merged = mergeImportedData(data, parsed);
@@ -1999,7 +2073,7 @@ function ImportExcelSheet({ data, onClose, onImport }) {
   return (
     <Sheet title="Importer depuis Excel" onClose={onClose}>
       <div className="empty-hint">
-        Conçu pour le modèle « Budget mensuel et annuel » (onglets Jan à Déc). Récupère les dépenses et remboursements du tableau « Suivi des dépenses » de chaque onglet, le revenu total renseigné, et les crédits/prêts (importés comme des dépenses catégorisées). Les prévisionnels (Prévu) et les projets d'épargne du fichier ne sont pas importés dans cette version.
+        Prend en charge deux modèles : « Budget mensuel et annuel » (onglets Jan à Déc, avec un tableau « Suivi des dépenses » daté) et « Budget mensuel personnel » (feuilles « Budget mensuel … », sans dates précises — chaque feuille est alors datée au 1er du mois trouvé dans son nom, ou du mois en cours si aucun mois n'y est identifiable). Le format est détecté automatiquement.
       </div>
       <button className="ghost-btn" onClick={() => fileRef.current?.click()}><Upload size={15} /> Choisir un fichier .xlsx</button>
       <input ref={fileRef} type="file" accept=".xlsx" style={{ display: "none" }} onChange={handleFile} />
