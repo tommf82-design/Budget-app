@@ -1985,6 +1985,34 @@ function LockSetupSheet({ onClose, onSet }) {
   );
 }
 
+function EncryptionUnlockScreen({ onUnlock }) {
+  const [pass, setPass] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true); setError("");
+    try { await onUnlock(pass); }
+    catch (e) { setError(e.message); setPass(""); }
+    setBusy(false);
+  }
+
+  return (
+    <div className="app-shell" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div style={{ textAlign: "center", padding: 24, width: "100%", maxWidth: 280 }}>
+        <div className="wordmark" style={{ marginBottom: 10 }}>Carnet</div>
+        <div className="empty-hint" style={{ marginBottom: 18 }}>Chiffrement activé — entre ton mot de passe pour continuer.</div>
+        <input className="text-input" type="password" autoFocus
+          style={{ textAlign: "center" }}
+          value={pass} onChange={(e) => { setPass(e.target.value); setError(""); }}
+          onKeyDown={(e) => e.key === "Enter" && submit()} />
+        {error && <div className="danger-text" style={{ marginTop: 10 }}>{error}</div>}
+        <button className="primary-btn" style={{ marginTop: 18 }} disabled={busy} onClick={submit}>{busy ? "…" : "Déverrouiller"}</button>
+      </div>
+    </div>
+  );
+}
+
 function LockScreen({ pinHash, onUnlock }) {
   const [pin, setPin] = useState("");
   const [error, setError] = useState(false);
@@ -2167,6 +2195,18 @@ function App({ pinHash, onSetPin, onClearPin }) {
   const [lastSync, setLastSync] = useState(null);
   const [encConfig, setEncConfigState] = useState(null); // { enabled, salt } | null
   const [encKey, setEncKey] = useState(null); // CryptoKey, session-only, never persisted
+  const encLockTimer = useRef(null);
+
+  function armEncryptionAutoLock() {
+    if (encLockTimer.current) clearTimeout(encLockTimer.current);
+    encLockTimer.current = setTimeout(() => { setEncKey(null); }, 10 * 60 * 1000);
+  }
+  function setEncKeyWithTimer(key) {
+    setEncKey(key);
+    if (key) armEncryptionAutoLock();
+    else if (encLockTimer.current) clearTimeout(encLockTimer.current);
+  }
+  useEffect(() => () => { if (encLockTimer.current) clearTimeout(encLockTimer.current); }, []);
 
   useEffect(() => {
     (async () => {
@@ -2188,12 +2228,12 @@ function App({ pinHash, onSetPin, onClearPin }) {
       // Verify the passphrase by attempting to decrypt the current remote file.
       const remote = await ghGetFile(gh);
       if (remote && remote.data && remote.data.carnetEncrypted) await decryptPayload(key, remote.data);
-      setEncKey(key);
+      setEncKeyWithTimer(key);
       saveEncConfig({ enabled: true, salt: existingSaltB64 });
     } else {
       saltBytes = crypto.getRandomValues(new Uint8Array(16));
       const key = await deriveKey(passphrase, saltBytes);
-      setEncKey(key);
+      setEncKeyWithTimer(key);
       saveEncConfig({ enabled: true, salt: b64FromBytes(saltBytes) });
     }
   }
@@ -2202,7 +2242,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
     const key = await deriveKey(passphrase, saltBytes);
     const remote = await ghGetFile(gh);
     if (remote && remote.data && remote.data.carnetEncrypted) await decryptPayload(key, remote.data);
-    setEncKey(key);
+    setEncKeyWithTimer(key);
   }
   async function handleChangePassphrase(oldPassphrase, newPassphrase) {
     const oldSalt = bytesFromB64(encConfig.salt);
@@ -2213,12 +2253,12 @@ function App({ pinHash, onSetPin, onClearPin }) {
     const newKey = await deriveKey(newPassphrase, newSalt);
     const newConfig = { enabled: true, salt: b64FromBytes(newSalt) };
     await ghPutFileEncrypted(gh, data, remote?.sha, newConfig, newKey);
-    setEncKey(newKey);
+    setEncKeyWithTimer(newKey);
     saveEncConfig(newConfig);
   }
   function handleDisableEncryption() {
     saveEncConfig({ enabled: false, salt: null });
-    setEncKey(null);
+    setEncKeyWithTimer(null);
   }
 
   useEffect(() => {
@@ -2324,7 +2364,8 @@ function App({ pinHash, onSetPin, onClearPin }) {
   }, [data, persist]);
   const handleImport = useCallback((imported) => { persist({ ...DEFAULT_DATA, ...imported }); }, [persist]);
 
-  if (!ready || !data || !gh) return <div className="app-shell"><div className="loading">Chargement…</div></div>;
+  if (!ready || !data || !gh || !encConfig) return <div className="app-shell"><div className="loading">Chargement…</div></div>;
+  if (encConfig.enabled && !encKey) return <EncryptionUnlockScreen onUnlock={handleUnlockEncryption} />;
 
   return (
     <div className="app-shell">
