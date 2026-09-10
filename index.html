@@ -544,12 +544,22 @@ function xlCellDateISO(ws, ref) {
 function parseBudgetWorkbook(workbook) {
   const transactions = [];
   const categoryNames = new Set();
+  const categoryGroups = {}; // name -> "fixed" | "variable" | "credit"
   const incomeBySheetMonth = [];
   const creditsBySheetMonth = [];
 
   MONTH_SHEET_NAMES.forEach((sheetName, monthIndex) => {
     const ws = workbook.Sheets[sheetName];
     if (!ws) return;
+
+    // Category name lists from the Prévu tables tell us the group, even for
+    // rows without an amount this month.
+    for (let row = 23; row <= 70; row++) {
+      const fixedName = xlCellStr(ws, `J${row}`);
+      if (fixedName) categoryGroups[fixedName] = "fixed";
+      const variableName = xlCellStr(ws, `T${row}`);
+      if (variableName) categoryGroups[variableName] = "variable";
+    }
 
     for (let row = 76; row <= 236; row++) {
       const dateISO = xlCellDateISO(ws, `B${row}`);
@@ -577,6 +587,7 @@ function parseBudgetWorkbook(workbook) {
     for (let row = 57; row <= 70; row++) {
       const catName = xlCellStr(ws, `C${row}`);
       if (!catName) continue;
+      categoryGroups[catName] = "credit";
       const actuel = xlCellNum(ws, `F${row}`);
       const prevu = xlCellNum(ws, `D${row}`);
       const val = actuel !== null ? actuel : prevu;
@@ -597,7 +608,7 @@ function parseBudgetWorkbook(workbook) {
   const monthlyIncome = {};
   incomeBySheetMonth.forEach(({ monthIndex, amount }) => { monthlyIncome[`${year}-${String(monthIndex + 1).padStart(2, "0")}`] = amount; });
 
-  return { transactions, monthlyIncome, categoryNames: Array.from(categoryNames), year };
+  return { transactions, monthlyIncome, categoryNames: Array.from(categoryNames), categoryGroups, year };
 }
 
 // Shared rule for every Excel importer: if a sheet doesn't carry an explicit
@@ -676,7 +687,8 @@ function mergeImportedData(data, parsed) {
   parsed.categoryNames.forEach((name) => {
     const key = name.trim().toLowerCase();
     if (!nameToId[key]) {
-      const newCat = { id: uid(), name: name.trim(), color: PALETTE[paletteIdx % PALETTE.length], subcategories: [] };
+      const group = (parsed.categoryGroups && parsed.categoryGroups[name]) || "variable";
+      const newCat = { id: uid(), name: name.trim(), color: PALETTE[paletteIdx % PALETTE.length], subcategories: [], group };
       paletteIdx++;
       categories.push(newCat);
       nameToId[key] = newCat.id;
@@ -718,8 +730,8 @@ function buildExcelWorkbook(data) {
     const m = data.months[mk];
     const totalExpenses = (m.expenses || []).filter((e) => e.kind !== "reimbursement").reduce((s, e) => s + e.amount, 0);
     const totalReimb = (m.expenses || []).filter((e) => e.kind === "reimbursement").reduce((s, e) => s + e.amount, 0);
-    const deposits = (m.transfers || []).filter((t) => t.type !== "withdrawal").reduce((s, t) => s + t.amount, 0);
-    const withdrawals = (m.transfers || []).filter((t) => t.type === "withdrawal").reduce((s, t) => s + t.amount, 0);
+    const deposits = (m.transfers || []).filter((t) => t.type !== "withdrawal" && t.show !== false).reduce((s, t) => s + t.amount, 0);
+    const withdrawals = (m.transfers || []).filter((t) => t.type === "withdrawal" && t.show !== false).reduce((s, t) => s + t.amount, 0);
     const net = deposits - withdrawals;
     const remaining = (m.income || 0) - totalExpenses + totalReimb - net;
     recapRows.push([monthLabel(mk), m.income || 0, totalExpenses, totalReimb, net, remaining]);
@@ -777,13 +789,15 @@ function buildExcelWorkbook(data) {
 }
 
 const DEFAULT_CATEGORIES = [
-  { id: "logement", name: "Logement", color: "#3F5B44", subcategories: ["Loyer", "Charges", "Assurance"] },
-  { id: "alimentation", name: "Alimentation", color: "#7C8F4E", subcategories: ["Courses", "Restaurants"] },
-  { id: "transport", name: "Transport", color: "#A9803F", subcategories: ["Essence", "Transports en commun"] },
-  { id: "loisirs", name: "Loisirs", color: "#8E6C8A", subcategories: ["Sorties", "Abonnements"] },
-  { id: "sante", name: "Santé", color: "#4E7C8A", subcategories: ["Pharmacie", "Consultations"] },
-  { id: "autres", name: "Autres", color: "#8A6A4E", subcategories: [] },
+  { id: "logement", name: "Logement", color: "#3F5B44", subcategories: ["Loyer", "Charges", "Assurance"], group: "fixed" },
+  { id: "alimentation", name: "Alimentation", color: "#7C8F4E", subcategories: ["Courses", "Restaurants"], group: "variable" },
+  { id: "transport", name: "Transport", color: "#A9803F", subcategories: ["Essence", "Transports en commun"], group: "variable" },
+  { id: "loisirs", name: "Loisirs", color: "#8E6C8A", subcategories: ["Sorties", "Abonnements"], group: "variable" },
+  { id: "sante", name: "Santé", color: "#4E7C8A", subcategories: ["Pharmacie", "Consultations"], group: "variable" },
+  { id: "autres", name: "Autres", color: "#8A6A4E", subcategories: [], group: "variable" },
 ];
+const GROUP_LABELS = { fixed: "Dépenses fixes", variable: "Dépenses variables", credit: "Crédits" };
+const GROUP_ORDER = ["fixed", "variable", "credit"];
 const DEFAULT_DATA = { categories: DEFAULT_CATEGORIES, months: {}, savingsProjects: [] };
 function emptyMonth() { return { income: 0, expenses: [], envelopes: {}, transfers: [], savingsGoal: 0, savingsEnvelope: 0 }; }
 function getMonth(data, key) {
@@ -948,7 +962,7 @@ function applyTheme(themeId) {
 /* Budget tab                                                              */
 /* ---------------------------------------------------------------------- */
 
-function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContribution, removeTransfer, updateTransfer, onNeedProject }) {
+function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addExpenseGlobal, updateExpenseGlobal, addContribution, removeTransfer, updateTransfer, onNeedProject }) {
   const month = getMonth(data, mKey);
   const [showAdd, setShowAdd] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
@@ -959,22 +973,28 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
 
   const totalExpenses = useMemo(() => month.expenses.filter((e) => e.kind !== "reimbursement").reduce((s, e) => s + e.amount, 0), [month.expenses]);
   const totalReimb = useMemo(() => month.expenses.filter((e) => e.kind === "reimbursement").reduce((s, e) => s + e.amount, 0), [month.expenses]);
-  const depositsSum = useMemo(() => month.transfers.filter((t) => t.type !== "withdrawal").reduce((s, t) => s + t.amount, 0), [month.transfers]);
-  const withdrawalsSum = useMemo(() => month.transfers.filter((t) => t.type === "withdrawal").reduce((s, t) => s + t.amount, 0), [month.transfers]);
+  const depositsSum = useMemo(() => month.transfers.filter((t) => t.type !== "withdrawal" && t.show !== false).reduce((s, t) => s + t.amount, 0), [month.transfers]);
+  const withdrawalsSum = useMemo(() => month.transfers.filter((t) => t.type === "withdrawal" && t.show !== false).reduce((s, t) => s + t.amount, 0), [month.transfers]);
   const totalTransfersNet = depositsSum - withdrawalsSum;
   const remaining = (month.income || 0) - totalExpenses + totalReimb - totalTransfersNet;
 
-  const byCategory = useMemo(() => {
-    const map = {};
-    for (const e of month.expenses) map[e.categoryId] = (map[e.categoryId] || 0) + signedAmount(e);
-    const list = categories.map((c) => ({ ...c, total: map[c.id] || 0 })).filter((c) => c.total > 0);
+  const byGroup = useMemo(() => {
+    const totals = { fixed: 0, variable: 0, credit: 0 };
+    for (const e of month.expenses) {
+      const cat = categories.find((c) => c.id === e.categoryId);
+      const group = cat ? (cat.group || "variable") : "variable";
+      totals[group] += signedAmount(e);
+    }
+    const list = GROUP_ORDER
+      .map((g) => ({ id: g, name: GROUP_LABELS[g], color: g === "fixed" ? "#3F5B44" : g === "variable" ? "#7C8F4E" : "#8A5B5B", total: totals[g] }))
+      .filter((g) => g.total > 0);
     if (totalTransfersNet > 0) list.push({ id: "_savings", name: "Épargne", color: "#A9803F", total: totalTransfersNet });
     return list.sort((a, b) => b.total - a.total);
   }, [month.expenses, categories, totalTransfersNet]);
 
   const movements = useMemo(() => {
     const exp = month.expenses.map((e) => ({ ...e, _type: "expense" }));
-    const trf = month.transfers.map((t) => ({ ...t, _type: "transfer" }));
+    const trf = month.transfers.filter((t) => t.show !== false).map((t) => ({ ...t, _type: "transfer" }));
     return [...exp, ...trf].sort(compareMovements);
   }, [month.expenses, month.transfers]);
 
@@ -991,8 +1011,6 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
   const savingsGoal = month.savingsGoal || 0;
   const goalPct = savingsGoal > 0 ? (totalTransfersNet / savingsGoal) * 100 : 0;
   const goalReached = savingsGoal > 0 && totalTransfersNet >= savingsGoal;
-  function addExpense(exp) { updateMonth(mKey, { ...month, expenses: [...month.expenses, exp] }); }
-  function updateExpense(id, patch) { updateMonth(mKey, { ...month, expenses: month.expenses.map((e) => e.id === id ? { ...e, ...patch } : e) }); }
   function removeExpense(item) { updateMonth(mKey, { ...month, expenses: month.expenses.filter((e) => e.id !== item.id) }); }
   function handleDelete(item) { if (item._type === "transfer") removeTransfer(mKey, item.id); else removeExpense(item); }
   function handleEdit(item) { setEditingItem(item); }
@@ -1056,17 +1074,17 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
         )}
       </div>
 
-      {byCategory.length > 0 && (
+      {byGroup.length > 0 && (
         <div className="card">
           <div className="card-title">Répartition</div>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <SimplePie data={byCategory} />
+            <SimplePie data={byGroup} />
             <div className="legend">
-              {byCategory.map((c) => (
+              {byGroup.map((c) => (
                 <div className="legend-row" key={c.id}>
                   <span className="dot" style={{ background: c.color }} />
                   <span className="legend-name">{c.name}</span>
-                  <span className="legend-val">{eur.format(c.total)}</span>
+                  <span className="legend-val">{eur.format(c.total)}{month.income > 0 && ` · ${Math.round((c.total / month.income) * 100)} %`}</span>
                 </div>
               ))}
             </div>
@@ -1092,8 +1110,8 @@ function BudgetTab({ data, updateMonth, mKey, setMKey, categories, addContributi
         <AddEntrySheet
           categories={categories} projects={data.savingsProjects} mKey={mKey} editing={editingItem && editingItem._type !== "transfer" ? editingItem : null}
           onClose={() => { setShowAdd(false); setEditingItem(null); }}
-          onSaveExpense={(exp) => { addExpense(exp); setShowAdd(false); }}
-          onUpdateExpense={(id, patch) => { updateExpense(id, patch); setEditingItem(null); }}
+          onSaveExpense={(exp) => { addExpenseGlobal(exp); setShowAdd(false); }}
+          onUpdateExpense={(id, patch) => { updateExpenseGlobal(mKey, id, patch); setEditingItem(null); }}
           onDeleteExpense={(item) => { removeExpense(item); setEditingItem(null); }}
           onSaveContribution={(projectId, contrib) => { addContribution(projectId, contrib); setShowAdd(false); }}
           onNeedProject={() => { setShowAdd(false); onNeedProject(); }}
@@ -1116,11 +1134,12 @@ function EditTransferSheet({ transfer, onClose, onSave, onDelete }) {
   const [amount, setAmount] = useState(String(transfer.amount));
   const [date, setDate] = useState(transfer.date);
   const [note, setNote] = useState(transfer.note || "");
+  const [show, setShow] = useState(transfer.show !== false);
 
   function submit() {
     const val = parseFloat(amount.replace(",", "."));
     if (!val || val <= 0) return;
-    onSave({ amount: val, date, note, type });
+    onSave({ amount: val, date, note, type, show });
   }
 
   return (
@@ -1132,6 +1151,10 @@ function EditTransferSheet({ transfer, onClose, onSave, onDelete }) {
       <Field label="Montant"><input className="text-input" inputMode="decimal" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
       <Field label="Date"><input className="text-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
       <Field label="Note (optionnel)"><input className="text-input" placeholder={type === "withdrawal" ? "Ex. Achat billets d'avion" : "Ex. Virement mensuel"} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+      <label className="autosync-row">
+        <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
+        <span>Afficher dans les mouvements (reste à vivre, etc.)</span>
+      </label>
       <button className="primary-btn" style={{ background: type === "withdrawal" ? "var(--forest)" : "var(--brass)" }} onClick={submit}>Enregistrer les modifications</button>
       <button className="danger-btn ghost" onClick={onDelete}><Trash2 size={14} /> Supprimer ce mouvement</button>
     </Sheet>
@@ -1147,6 +1170,7 @@ function AddEntrySheet({ categories, projects, mKey, editing, onClose, onSaveExp
   const [label, setLabel] = useState(editing?.label || "");
   const [date, setDate] = useState(editing?.date || todayISO());
   const [projectId, setProjectId] = useState(projects[0]?.id || "");
+  const [show, setShow] = useState(true);
   const subs = categories.find((c) => c.id === categoryId)?.subcategories || [];
 
   function submit() {
@@ -1159,7 +1183,7 @@ function AddEntrySheet({ categories, projects, mKey, editing, onClose, onSaveExp
     }
     if (kind === "saving") {
       if (!projectId) return;
-      onSaveContribution(projectId, { id: uid(), amount: val, date, note: label });
+      onSaveContribution(projectId, { id: uid(), amount: val, date, note: label, show });
       return;
     }
     if (!categoryId) return;
@@ -1184,7 +1208,11 @@ function AddEntrySheet({ categories, projects, mKey, editing, onClose, onSaveExp
                 {projects.map((p) => <button key={p.id} className={`chip ${projectId === p.id ? "chip-active" : ""}`} style={projectId === p.id ? { background: p.color, borderColor: p.color } : {}} onClick={() => setProjectId(p.id)}>{p.name}</button>)}
               </div>
             </Field>
-            <div className="hint-line" style={{ marginTop: -6 }}>Sera déduit du reste à vivre de {monthLabel(mKey)}.</div>
+            <div className="hint-line" style={{ marginTop: -6 }}>Sera déduit du reste à vivre de {monthLabel(date.slice(0, 7))}.</div>
+            <label className="autosync-row">
+              <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
+              <span>Afficher dans les mouvements (reste à vivre, etc.)</span>
+            </label>
           </>
         )
       ) : (
@@ -1226,7 +1254,7 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
   const month = getMonth(data, mKey);
   const [editingCat, setEditingCat] = useState(null);
   const [draft, setDraft] = useState("");
-  const [showNewCat, setShowNewCat] = useState(false);
+  const [newCatGroup, setNewCatGroup] = useState(null);
   const [detailCat, setDetailCat] = useState(null);
   const [editingSavings, setEditingSavings] = useState(false);
   const [savingsDraft, setSavingsDraft] = useState(String(month.savingsEnvelope || ""));
@@ -1237,8 +1265,8 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
     return map;
   }, [month.expenses]);
   const netSavings = useMemo(() => {
-    const deposits = month.transfers.filter((t) => t.type !== "withdrawal").reduce((s, t) => s + t.amount, 0);
-    const withdrawals = month.transfers.filter((t) => t.type === "withdrawal").reduce((s, t) => s + t.amount, 0);
+    const deposits = month.transfers.filter((t) => t.type !== "withdrawal" && t.show !== false).reduce((s, t) => s + t.amount, 0);
+    const withdrawals = month.transfers.filter((t) => t.type === "withdrawal" && t.show !== false).reduce((s, t) => s + t.amount, 0);
     return deposits - withdrawals;
   }, [month.transfers]);
   const totalAllocated = categories.reduce((s, c) => s + (month.envelopes[c.id] || 0), 0) + (month.savingsEnvelope || 0);
@@ -1261,6 +1289,35 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
 
   const chartData = categories.map((c) => ({ name: c.name, "Alloué": month.envelopes[c.id] || 0, "Dépensé": Math.max(0, spentByCategory[c.id] || 0) })).filter((d) => d["Alloué"] > 0 || d["Dépensé"] > 0);
   if (savingsEnvelope > 0 || netSavings > 0) chartData.push({ name: "Épargne", "Alloué": savingsEnvelope, "Dépensé": Math.max(0, netSavings) });
+
+  function renderEnvelopeRow(c) {
+    const allocated = month.envelopes[c.id] || 0;
+    const spent = Math.max(0, spentByCategory[c.id] || 0);
+    const over = spent > allocated;
+    const pct = allocated > 0 ? (spent / allocated) * 100 : (spent > 0 ? 200 : 0);
+    return (
+      <li className={`envelope-row ${over ? "over" : ""}`} key={c.id}>
+        <div className="envelope-top">
+          <button className="envelope-name-btn" onClick={() => setDetailCat(c.id)}>
+            <span className="dot" style={{ background: c.color }} /><span className="envelope-name">{c.name}</span>
+            {over && <AlertTriangle size={13} color="var(--brick)" />}
+          </button>
+          {editingCat === c.id ? (
+            <div className="inline-edit" style={{ marginLeft: "auto" }}>
+              <input autoFocus className="inline-input small" inputMode="decimal" value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveAllocation(c.id)} />
+              <button className="icon-btn" onClick={() => saveAllocation(c.id)}><Check size={15} /></button>
+            </div>
+          ) : (
+            <button className="envelope-amount-btn" onClick={() => { setDraft(String(allocated || "")); setEditingCat(c.id); }}>{eur.format(allocated)} <Pencil size={12} /></button>
+          )}
+        </div>
+        <ProgressBar value={pct} tone="forest" />
+        <div className="envelope-sub" style={over ? { color: "var(--brick)", fontWeight: 500 } : {}}>
+          {over ? `Dépassé de ${eur.format(spent - allocated)}` : `${eur.format(spent)} dépensé${allocated > 0 ? ` · ${eur.format(allocated - spent)} restant` : ""}`}
+        </div>
+      </li>
+    );
+  }
 
   return (
     <div className="tab-panel">
@@ -1303,43 +1360,25 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-title">Enveloppes par catégorie</div>
-        <div className="hint-line">Touche une catégorie pour voir le détail, la modifier ou la supprimer.</div>
-        <ul className="envelope-list">
-          {categories.map((c) => {
-            const allocated = month.envelopes[c.id] || 0;
-            const spent = Math.max(0, spentByCategory[c.id] || 0);
-            const over = spent > allocated;
-            const pct = allocated > 0 ? (spent / allocated) * 100 : (spent > 0 ? 200 : 0);
-            return (
-              <li className={`envelope-row ${over ? "over" : ""}`} key={c.id}>
-                <div className="envelope-top">
-                  <button className="envelope-name-btn" onClick={() => setDetailCat(c.id)}>
-                    <span className="dot" style={{ background: c.color }} /><span className="envelope-name">{c.name}</span>
-                    {over && <AlertTriangle size={13} color="var(--brick)" />}
-                  </button>
-                  {editingCat === c.id ? (
-                    <div className="inline-edit" style={{ marginLeft: "auto" }}>
-                      <input autoFocus className="inline-input small" inputMode="decimal" value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveAllocation(c.id)} />
-                      <button className="icon-btn" onClick={() => saveAllocation(c.id)}><Check size={15} /></button>
-                    </div>
-                  ) : (
-                    <button className="envelope-amount-btn" onClick={() => { setDraft(String(allocated || "")); setEditingCat(c.id); }}>{eur.format(allocated)} <Pencil size={12} /></button>
-                  )}
-                </div>
-                <ProgressBar value={pct} tone="forest" />
-                <div className="envelope-sub" style={over ? { color: "var(--brick)", fontWeight: 500 } : {}}>
-                  {over ? `Dépassé de ${eur.format(spent - allocated)}` : `${eur.format(spent)} dépensé${allocated > 0 ? ` · ${eur.format(allocated - spent)} restant` : ""}`}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-        <button className="ghost-btn" onClick={() => setShowNewCat(true)}><Plus size={15} /> Nouvelle catégorie</button>
-      </div>
+      {GROUP_ORDER.map((groupKey) => {
+        const groupCats = categories.filter((c) => (c.group || "variable") === groupKey);
+        return (
+          <div className="card" key={groupKey}>
+            <div className="card-title">{GROUP_LABELS[groupKey]}</div>
+            {groupCats.length === 0 ? (
+              <div className="hint-line" style={{ marginTop: 0 }}>Aucune catégorie de ce type pour l'instant.</div>
+            ) : (
+              <>
+                <div className="hint-line">Touche une catégorie pour voir le détail, la modifier ou la supprimer.</div>
+                <ul className="envelope-list">{groupCats.map(renderEnvelopeRow)}</ul>
+              </>
+            )}
+            <button className="ghost-btn" onClick={() => setNewCatGroup(groupKey)}><Plus size={15} /> Nouvelle catégorie</button>
+          </div>
+        );
+      })}
 
-      {showNewCat && <NewCategorySheet onClose={() => setShowNewCat(false)} onSave={(cat) => { catActions.add(cat); setShowNewCat(false); }} />}
+      {newCatGroup && <NewCategorySheet defaultGroup={newCatGroup} onClose={() => setNewCatGroup(null)} onSave={(cat) => { catActions.add(cat); setNewCatGroup(null); }} />}
       {detailCat && (
         <CategoryDetailSheet
           category={categories.find((c) => c.id === detailCat)}
@@ -1349,24 +1388,74 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
           onDeleteCategory={() => { catActions.remove(detailCat); setDetailCat(null); }}
           onAddSub={(name) => catActions.addSub(detailCat, name)}
           onDeleteSub={(name) => catActions.removeSub(detailCat, name)}
+          onRenameCategory={(name) => catActions.rename(detailCat, name)}
+          onRenameSub={(oldName, newName) => catActions.renameSub(detailCat, oldName, newName)}
+          onChangeGroup={(g) => catActions.changeGroup(detailCat, g)}
         />
       )}
     </div>
   );
 }
 
-function CategoryDetailSheet({ category, expenses, onClose, onDeleteExpense, onDeleteCategory, onAddSub, onDeleteSub }) {
+function CategoryDetailSheet({ category, expenses, onClose, onDeleteExpense, onDeleteCategory, onAddSub, onDeleteSub, onRenameCategory, onRenameSub, onChangeGroup }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [newSub, setNewSub] = useState("");
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(category?.name || "");
+  const [editingSub, setEditingSub] = useState(null); // old subcategory name being renamed
+  const [subDraft, setSubDraft] = useState("");
   const sorted = [...expenses].sort(compareMovements);
   if (!category) return null;
+
+  function saveName() {
+    if (nameDraft.trim()) onRenameCategory(nameDraft.trim());
+    setEditingName(false);
+  }
+  function saveSubRename() {
+    if (subDraft.trim() && subDraft.trim() !== editingSub) onRenameSub(editingSub, subDraft.trim());
+    setEditingSub(null);
+  }
+
   return (
-    <Sheet title={category.name} onClose={onClose}>
+    <Sheet title={editingName ? "Renommer" : category.name} onClose={onClose}>
+      <div>
+        {editingName ? (
+          <div className="inline-edit">
+            <input className="text-input" autoFocus value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveName()} />
+            <button className="icon-btn" onClick={saveName}><Check size={16} /></button>
+          </div>
+        ) : (
+          <button className="ghost-btn small" style={{ marginTop: 0 }} onClick={() => { setNameDraft(category.name); setEditingName(true); }}><Pencil size={13} /> Renommer la catégorie</button>
+        )}
+      </div>
+
+      <div>
+        <div className="field-label" style={{ marginBottom: 8 }}>Type</div>
+        <div className="segmented">
+          {GROUP_ORDER.map((g) => (
+            <button key={g} className={(category.group || "variable") === g ? "seg-active" : ""} onClick={() => onChangeGroup(g)}>{GROUP_LABELS[g]}</button>
+          ))}
+        </div>
+      </div>
+
       <div>
         <div className="field-label" style={{ marginBottom: 8 }}>Sous-catégories</div>
         <div className="chip-row">
-          {category.subcategories.map((s) => <span className="chip removable" key={s}>{s}<button onClick={() => onDeleteSub(s)} aria-label={`Supprimer ${s}`}><X size={12} /></button></span>)}
+          {category.subcategories.map((s) => (
+            editingSub === s ? (
+              <span className="inline-edit" key={s}>
+                <input className="text-input" autoFocus style={{ width: 120 }} value={subDraft} onChange={(e) => setSubDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveSubRename()} />
+                <button className="icon-btn" onClick={saveSubRename}><Check size={14} /></button>
+              </span>
+            ) : (
+              <span className="chip removable" key={s} onClick={() => { setEditingSub(s); setSubDraft(s); }} style={{ cursor: "pointer" }}>
+                {s}
+                <button onClick={(e) => { e.stopPropagation(); onDeleteSub(s); }} aria-label={`Supprimer ${s}`}><X size={12} /></button>
+              </span>
+            )
+          ))}
         </div>
+        <div className="hint-line" style={{ marginTop: 4, marginBottom: 4 }}>Touche une sous-catégorie pour la renommer.</div>
         <div className="inline-edit" style={{ marginTop: 8 }}>
           <input className="text-input" placeholder="Nouvelle sous-catégorie" value={newSub} onChange={(e) => setNewSub(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && newSub.trim()) { onAddSub(newSub.trim()); setNewSub(""); } }} />
           <button className="icon-btn" onClick={() => { if (newSub.trim()) { onAddSub(newSub.trim()); setNewSub(""); } }}><Plus size={16} /></button>
@@ -1393,13 +1482,19 @@ function CategoryDetailSheet({ category, expenses, onClose, onDeleteExpense, onD
   );
 }
 
-function NewCategorySheet({ onClose, onSave }) {
+function NewCategorySheet({ onClose, onSave, defaultGroup }) {
   const [name, setName] = useState("");
   const [color, setColor] = useState(PALETTE[0]);
-  function submit() { if (!name.trim()) return; onSave({ id: uid(), name: name.trim(), color, subcategories: [] }); }
+  const [group, setGroup] = useState(defaultGroup || "variable");
+  function submit() { if (!name.trim()) return; onSave({ id: uid(), name: name.trim(), color, subcategories: [], group }); }
   return (
     <Sheet title="Nouvelle catégorie" onClose={onClose}>
       <Field label="Nom"><input className="text-input" autoFocus placeholder="Ex. Cadeaux" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+      <Field label="Type">
+        <div className="segmented">
+          {GROUP_ORDER.map((g) => <button key={g} className={group === g ? "seg-active" : ""} onClick={() => setGroup(g)}>{GROUP_LABELS[g]}</button>)}
+        </div>
+      </Field>
       <Field label="Couleur"><div className="color-row">{PALETTE.map((c) => <button key={c} className={`color-swatch ${color === c ? "color-active" : ""}`} style={{ background: c }} onClick={() => setColor(c)} aria-label={c} />)}</div></Field>
       <button className="primary-btn" onClick={submit}>Créer la catégorie</button>
     </Sheet>
@@ -1475,8 +1570,9 @@ function ContributionSheet({ project, mKey, onClose, onSave }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(todayISO());
   const [note, setNote] = useState("");
+  const [show, setShow] = useState(true);
   const saved = project ? projectSaved(project) : 0;
-  function submit() { const val = parseFloat(amount.replace(",", ".")); if (!val || val <= 0) return; onSave({ id: uid(), amount: val, date, note, type, createdAt: Date.now() }); }
+  function submit() { const val = parseFloat(amount.replace(",", ".")); if (!val || val <= 0) return; onSave({ id: uid(), amount: val, date, note, type, createdAt: Date.now(), show }); }
   return (
     <Sheet title={`« ${project?.name} »`} onClose={onClose}>
       <div className="segmented">
@@ -1487,7 +1583,11 @@ function ContributionSheet({ project, mKey, onClose, onSave }) {
       <Field label="Montant"><input className="text-input" inputMode="decimal" placeholder="0,00 €" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
       <Field label="Date"><input className="text-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
       <Field label="Note (optionnel)"><input className="text-input" placeholder={type === "withdrawal" ? "Ex. Achat billets d'avion" : "Ex. Virement mensuel"} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
-      <div className="hint-line">{type === "withdrawal" ? `Ce retrait s'ajoutera au reste à vivre de ${monthLabel(mKey)}.` : `Ce montant sera déduit du reste à vivre de ${monthLabel(mKey)}.`}</div>
+      <label className="autosync-row">
+        <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
+        <span>Afficher dans les mouvements (reste à vivre, etc.)</span>
+      </label>
+      <div className="hint-line">{type === "withdrawal" ? `Ce retrait s'ajoutera au reste à vivre de ${monthLabel(date.slice(0, 7))} (si affiché).` : `Ce montant sera déduit du reste à vivre de ${monthLabel(date.slice(0, 7))} (si affiché).`}</div>
       <button className="primary-btn" style={{ background: type === "withdrawal" ? "var(--forest)" : "var(--brass)" }} onClick={submit}>{type === "withdrawal" ? "Retirer" : "Ajouter"}</button>
     </Sheet>
   );
@@ -1553,7 +1653,7 @@ function RecapTab({ data, categories, year, setYear }) {
         const key = categories.find((c) => c.id === e.categoryId) ? e.categoryId : "_unknown";
         catMap[key] = (catMap[key] || 0) + signedAmount(e);
       }
-      for (const t of m.transfers || []) transfers += t.type === "withdrawal" ? -t.amount : t.amount;
+      for (const t of m.transfers || []) { if (t.show === false) continue; transfers += t.type === "withdrawal" ? -t.amount : t.amount; }
       return monthNet;
     });
     return { income, expenses, reimb, transfers, catMap, monthly };
@@ -2334,18 +2434,58 @@ function App({ pinHash, onSetPin, onClearPin }) {
     remove: useCallback((catId) => { if (!data) return; persist({ ...data, categories: data.categories.filter((c) => c.id !== catId) }); }, [data, persist]),
     addSub: useCallback((catId, name) => { if (!data) return; persist({ ...data, categories: data.categories.map((c) => c.id === catId ? { ...c, subcategories: [...c.subcategories, name] } : c) }); }, [data, persist]),
     removeSub: useCallback((catId, name) => { if (!data) return; persist({ ...data, categories: data.categories.map((c) => c.id === catId ? { ...c, subcategories: c.subcategories.filter((s) => s !== name) } : c) }); }, [data, persist]),
+    rename: useCallback((catId, newName) => { if (!data) return; persist({ ...data, categories: data.categories.map((c) => c.id === catId ? { ...c, name: newName } : c) }); }, [data, persist]),
+    changeGroup: useCallback((catId, group) => { if (!data) return; persist({ ...data, categories: data.categories.map((c) => c.id === catId ? { ...c, group } : c) }); }, [data, persist]),
+    renameSub: useCallback((catId, oldName, newName) => {
+      if (!data) return;
+      const categories = data.categories.map((c) => c.id === catId ? { ...c, subcategories: c.subcategories.map((s) => s === oldName ? newName : s) } : c);
+      const months = {};
+      Object.entries(data.months).forEach(([key, m]) => {
+        months[key] = { ...m, expenses: m.expenses.map((e) => (e.categoryId === catId && e.subcategory === oldName) ? { ...e, subcategory: newName } : e) };
+      });
+      persist({ ...data, categories, months });
+    }, [data, persist]),
   };
   const addProject = useCallback((p) => { if (!data) return; persist({ ...data, savingsProjects: [...data.savingsProjects, p] }); }, [data, persist]);
   const removeProject = useCallback((id) => { if (!data) return; persist({ ...data, savingsProjects: data.savingsProjects.filter((p) => p.id !== id) }); }, [data, persist]);
+  const addExpenseGlobal = useCallback((exp) => {
+    if (!data) return;
+    const monthKey = exp.date.slice(0, 7);
+    const month = getMonth(data, monthKey);
+    persist({ ...data, months: { ...data.months, [monthKey]: { ...month, expenses: [...month.expenses, exp] } } });
+  }, [data, persist]);
+  const updateExpenseGlobal = useCallback((oldMonthKey, expenseId, patch) => {
+    if (!data || !oldMonthKey) return;
+    const oldMonth = getMonth(data, oldMonthKey);
+    const existing = oldMonth.expenses.find((e) => e.id === expenseId);
+    if (!existing) return;
+    const merged = { ...existing, ...patch };
+    const newMonthKey = merged.date.slice(0, 7);
+    if (newMonthKey === oldMonthKey) {
+      persist({ ...data, months: { ...data.months, [oldMonthKey]: { ...oldMonth, expenses: oldMonth.expenses.map((e) => e.id === expenseId ? merged : e) } } });
+      return;
+    }
+    const newMonth = getMonth(data, newMonthKey);
+    persist({
+      ...data,
+      months: {
+        ...data.months,
+        [oldMonthKey]: { ...oldMonth, expenses: oldMonth.expenses.filter((e) => e.id !== expenseId) },
+        [newMonthKey]: { ...newMonth, expenses: [...newMonth.expenses, merged] },
+      },
+    });
+  }, [data, persist]);
   const addContribution = useCallback((projectId, contrib) => {
     if (!data) return;
     const project = data.savingsProjects.find((p) => p.id === projectId);
-    const month = getMonth(data, mKey);
+    const monthKey = contrib.date.slice(0, 7);
+    const month = getMonth(data, monthKey);
     const type = contrib.type || "deposit";
-    const record = { id: contrib.id, amount: contrib.amount, date: contrib.date, note: contrib.note, type, monthKey: mKey, createdAt: contrib.createdAt || Date.now() };
-    const transfer = { id: contrib.id, amount: contrib.amount, date: contrib.date, note: contrib.note, type, projectId, projectName: project?.name || "Projet", createdAt: contrib.createdAt || Date.now() };
-    persist({ ...data, months: { ...data.months, [mKey]: { ...month, transfers: [...month.transfers, transfer] } }, savingsProjects: data.savingsProjects.map((p) => p.id === projectId ? { ...p, contributions: [...p.contributions, record] } : p) });
-  }, [data, persist, mKey]);
+    const show = contrib.show !== false;
+    const record = { id: contrib.id, amount: contrib.amount, date: contrib.date, note: contrib.note, type, monthKey, createdAt: contrib.createdAt || Date.now(), show };
+    const transfer = { id: contrib.id, amount: contrib.amount, date: contrib.date, note: contrib.note, type, projectId, projectName: project?.name || "Projet", createdAt: contrib.createdAt || Date.now(), show };
+    persist({ ...data, months: { ...data.months, [monthKey]: { ...month, transfers: [...month.transfers, transfer] } }, savingsProjects: data.savingsProjects.map((p) => p.id === projectId ? { ...p, contributions: [...p.contributions, record] } : p) });
+  }, [data, persist]);
   const removeTransfer = useCallback((key, transferId) => {
     if (!data || !key) return;
     const month = getMonth(data, key);
@@ -2353,14 +2493,28 @@ function App({ pinHash, onSetPin, onClearPin }) {
     if (!transfer) return;
     persist({ ...data, months: { ...data.months, [key]: { ...month, transfers: month.transfers.filter((t) => t.id !== transferId) } }, savingsProjects: data.savingsProjects.map((p) => p.id === transfer.projectId ? { ...p, contributions: p.contributions.filter((c) => c.id !== transferId) } : p) });
   }, [data, persist]);
-  const updateTransfer = useCallback((key, transferId, patch) => {
-    if (!data || !key) return;
-    const month = getMonth(data, key);
-    const transfer = month.transfers.find((t) => t.id === transferId);
+  const updateTransfer = useCallback((oldMonthKey, transferId, patch) => {
+    if (!data || !oldMonthKey) return;
+    const oldMonth = getMonth(data, oldMonthKey);
+    const transfer = oldMonth.transfers.find((t) => t.id === transferId);
     if (!transfer) return;
-    const newMonth = { ...month, transfers: month.transfers.map((t) => t.id === transferId ? { ...t, ...patch } : t) };
-    const newProjects = data.savingsProjects.map((p) => p.id === transfer.projectId ? { ...p, contributions: p.contributions.map((c) => c.id === transferId ? { ...c, ...patch } : c) } : p);
-    persist({ ...data, months: { ...data.months, [key]: newMonth }, savingsProjects: newProjects });
+    const merged = { ...transfer, ...patch };
+    const newMonthKey = merged.date.slice(0, 7);
+    const updatedProjects = data.savingsProjects.map((p) => p.id === transfer.projectId ? { ...p, contributions: p.contributions.map((c) => c.id === transferId ? { ...c, ...patch, monthKey: newMonthKey } : c) } : p);
+    if (newMonthKey === oldMonthKey) {
+      persist({ ...data, months: { ...data.months, [oldMonthKey]: { ...oldMonth, transfers: oldMonth.transfers.map((t) => t.id === transferId ? merged : t) } }, savingsProjects: updatedProjects });
+      return;
+    }
+    const newMonth = getMonth(data, newMonthKey);
+    persist({
+      ...data,
+      months: {
+        ...data.months,
+        [oldMonthKey]: { ...oldMonth, transfers: oldMonth.transfers.filter((t) => t.id !== transferId) },
+        [newMonthKey]: { ...newMonth, transfers: [...newMonth.transfers, merged] },
+      },
+      savingsProjects: updatedProjects,
+    });
   }, [data, persist]);
   const handleImport = useCallback((imported) => { persist({ ...DEFAULT_DATA, ...imported }); }, [persist]);
 
@@ -2377,7 +2531,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
         </div>
       </header>
       <main className="app-main">
-        {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addContribution={addContribution} removeTransfer={removeTransfer} updateTransfer={updateTransfer} onNeedProject={() => setTab("epargne")} />}
+        {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addExpenseGlobal={addExpenseGlobal} updateExpenseGlobal={updateExpenseGlobal} addContribution={addContribution} removeTransfer={removeTransfer} updateTransfer={updateTransfer} onNeedProject={() => setTab("epargne")} />}
         {tab === "enveloppes" && <EnvelopesTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} catActions={catActions} />}
         {tab === "epargne" && <SavingsTab projects={data.savingsProjects} addProject={addProject} addContribution={addContribution} removeProject={removeProject} removeTransfer={removeTransfer} mKey={mKey} />}
         {tab === "recap" && <RecapTab data={data} categories={data.categories} year={year} setYear={setYear} />}
