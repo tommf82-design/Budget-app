@@ -547,6 +547,7 @@ function parseBudgetWorkbook(workbook) {
   const categoryGroups = {}; // name -> "fixed" | "variable" | "credit"
   const incomeBySheetMonth = [];
   const creditsBySheetMonth = [];
+  const savingsBySheetMonth = [];
 
   MONTH_SHEET_NAMES.forEach((sheetName, monthIndex) => {
     const ws = workbook.Sheets[sheetName];
@@ -593,6 +594,17 @@ function parseBudgetWorkbook(workbook) {
       const val = actuel !== null ? actuel : prevu;
       if (val) { creditsBySheetMonth.push({ monthIndex, categoryName: catName, amount: val }); categoryNames.add(catName); }
     }
+
+    // Épargne et investissement: manual Prévu/Actuel per project, like Crédits
+    // — becomes a deposit into a same-named savings project.
+    for (let row = 38; row <= 51; row++) {
+      const projName = xlCellStr(ws, `B${row}`);
+      if (!projName) continue;
+      const actuel = xlCellNum(ws, `F${row}`);
+      const prevu = xlCellNum(ws, `D${row}`);
+      const val = actuel !== null ? actuel : prevu;
+      if (val) savingsBySheetMonth.push({ monthIndex, projectName: projName, amount: val });
+    }
   });
 
   const yearCounts = {};
@@ -605,10 +617,16 @@ function parseBudgetWorkbook(workbook) {
     transactions.push({ date, amount: Math.abs(amount), kind: "expense", categoryName, note: "Crédit / prêt" });
   });
 
+  const savingsEntries = savingsBySheetMonth.map(({ monthIndex, projectName, amount }) => ({
+    date: `${year}-${String(monthIndex + 1).padStart(2, "0")}-01`,
+    projectName,
+    amount: Math.abs(amount),
+  }));
+
   const monthlyIncome = {};
   incomeBySheetMonth.forEach(({ monthIndex, amount }) => { monthlyIncome[`${year}-${String(monthIndex + 1).padStart(2, "0")}`] = amount; });
 
-  return { transactions, monthlyIncome, categoryNames: Array.from(categoryNames), categoryGroups, year };
+  return { transactions, monthlyIncome, categoryNames: Array.from(categoryNames), categoryGroups, savingsEntries, year };
 }
 
 // Shared rule for every Excel importer: if a sheet doesn't carry an explicit
@@ -709,7 +727,34 @@ function mergeImportedData(data, parsed) {
     if (!month.income) months[monthKey] = { ...month, income: amount };
   });
 
-  return { ...data, categories, months };
+  let savingsProjects = [...data.savingsProjects];
+  if (parsed.savingsEntries && parsed.savingsEntries.length > 0) {
+    const projectNameToId = {};
+    savingsProjects.forEach((p) => { projectNameToId[p.name.trim().toLowerCase()] = p.id; });
+    const totalsByName = {};
+    parsed.savingsEntries.forEach((s) => { const key = s.projectName.trim().toLowerCase(); totalsByName[key] = (totalsByName[key] || 0) + s.amount; });
+    let projPaletteIdx = 0;
+    parsed.savingsEntries.forEach((s) => {
+      const key = s.projectName.trim().toLowerCase();
+      if (!projectNameToId[key]) {
+        const newProject = { id: uid(), name: s.projectName.trim(), target: totalsByName[key], color: PALETTE[projPaletteIdx % PALETTE.length], contributions: [] };
+        projPaletteIdx++;
+        savingsProjects.push(newProject);
+        projectNameToId[key] = newProject.id;
+      }
+      const projectId = projectNameToId[key];
+      const monthKey = s.date.slice(0, 7);
+      const contribId = uid();
+      const contribution = { id: contribId, amount: s.amount, date: s.date, note: "Import Excel", type: "deposit", monthKey, createdAt: Date.now(), show: true };
+      savingsProjects = savingsProjects.map((p) => p.id === projectId ? { ...p, contributions: [...p.contributions, contribution] } : p);
+      const project = savingsProjects.find((p) => p.id === projectId);
+      const month = months[monthKey] ? { ...months[monthKey], transfers: [...months[monthKey].transfers] } : emptyMonth();
+      month.transfers.push({ id: contribId, amount: s.amount, date: s.date, note: "Import Excel", type: "deposit", projectId, projectName: project.name, createdAt: Date.now(), show: true });
+      months[monthKey] = month;
+    });
+  }
+
+  return { ...data, categories, months, savingsProjects };
 }
 
 function buildExcelWorkbook(data) {
@@ -1507,7 +1552,7 @@ function NewCategorySheet({ onClose, onSave, defaultGroup }) {
 
 function projectSaved(p) { return p.contributions.reduce((s, c) => s + (c.type === "withdrawal" ? -c.amount : c.amount), 0); }
 
-function SavingsTab({ projects, addProject, addContribution, removeProject, removeTransfer, mKey }) {
+function SavingsTab({ projects, addProject, addContribution, removeProject, removeTransfer, updateProjectTarget, mKey }) {
   const [showNew, setShowNew] = useState(false);
   const [movementFor, setMovementFor] = useState(null);
   const [detailProject, setDetailProject] = useState(null);
@@ -1544,7 +1589,7 @@ function SavingsTab({ projects, addProject, addContribution, removeProject, remo
       )}
       <button className="fab" style={{ background: "var(--brass)" }} onClick={() => setShowNew(true)} aria-label="Nouveau projet"><Plus size={22} /></button>
       {showNew && <NewProjectSheet onClose={() => setShowNew(false)} onSave={(p) => { addProject(p); setShowNew(false); }} />}
-      {detailProject && <ProjectDetailSheet project={projects.find((p) => p.id === detailProject)} onClose={() => setDetailProject(null)} onAddMovement={() => setMovementFor(detailProject)} onDeleteMovement={(c) => removeTransfer(c.monthKey, c.id)} />}
+      {detailProject && <ProjectDetailSheet project={projects.find((p) => p.id === detailProject)} onClose={() => setDetailProject(null)} onAddMovement={() => setMovementFor(detailProject)} onDeleteMovement={(c) => removeTransfer(c.monthKey, c.id)} onUpdateTarget={(target) => updateProjectTarget(detailProject, target)} />}
       {movementFor && <ContributionSheet project={projects.find((p) => p.id === movementFor)} mKey={mKey} onClose={() => setMovementFor(null)} onSave={(c) => { addContribution(movementFor, c); setMovementFor(null); }} />}
     </div>
   );
@@ -1593,15 +1638,34 @@ function ContributionSheet({ project, mKey, onClose, onSave }) {
   );
 }
 
-function ProjectDetailSheet({ project, onClose, onAddMovement, onDeleteMovement }) {
+function ProjectDetailSheet({ project, onClose, onAddMovement, onDeleteMovement, onUpdateTarget }) {
+  const [editingTarget, setEditingTarget] = useState(false);
+  const [targetDraft, setTargetDraft] = useState(project ? String(project.target || "") : "");
   if (!project) return null;
   const saved = projectSaved(project);
   const pct = project.target > 0 ? (saved / project.target) * 100 : 0;
   const sorted = [...project.contributions].sort(compareMovements);
+  function saveTarget() {
+    const val = parseFloat(targetDraft.replace(",", ".")) || 0;
+    onUpdateTarget(val);
+    setEditingTarget(false);
+  }
   return (
     <Sheet title={project.name} onClose={onClose}>
       <div>
-        <div className="project-amounts"><span className="project-saved">{eur.format(saved)}</span><span className="project-target"> / {eur.format(project.target)}</span></div>
+        <div className="project-amounts">
+          <span className="project-saved">{eur.format(saved)}</span>
+          {editingTarget ? (
+            <span className="inline-edit" style={{ marginLeft: 8 }}>
+              <input autoFocus className="inline-input small" inputMode="decimal" value={targetDraft} onChange={(e) => setTargetDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveTarget()} />
+              <button className="icon-btn" onClick={saveTarget}><Check size={14} /></button>
+            </span>
+          ) : (
+            <button className="envelope-amount-btn" style={{ display: "inline-flex", marginLeft: 4 }} onClick={() => { setTargetDraft(String(project.target || "")); setEditingTarget(true); }}>
+              / {eur.format(project.target)} <Pencil size={11} />
+            </button>
+          )}
+        </div>
         <ProgressBar value={pct} tone="brass" />
         <div className="project-pct" style={{ marginBottom: 0 }}>{Math.round(pct)}% atteint</div>
       </div>
@@ -2219,12 +2283,12 @@ function ImportExcelSheet({ data, onClose, onImport }) {
           return;
         }
         const parsed = isAgathe ? parseBudgetWorkbook(wb) : parseMsBudgetWorkbook(wb);
-        if (parsed.transactions.length === 0 && Object.keys(parsed.monthlyIncome).length === 0) {
+        if (parsed.transactions.length === 0 && Object.keys(parsed.monthlyIncome).length === 0 && (!parsed.savingsEntries || parsed.savingsEntries.length === 0)) {
           setStatus({ type: "error", message: "Aucune donnée trouvée dans ce fichier." });
           return;
         }
         const merged = mergeImportedData(data, parsed);
-        setPreview({ parsed, merged, newCatCount: merged.categories.length - data.categories.length });
+        setPreview({ parsed, merged, newCatCount: merged.categories.length - data.categories.length, newProjectCount: merged.savingsProjects.length - data.savingsProjects.length });
         setStatus(null);
       } catch (err) {
         setStatus({ type: "error", message: "Impossible de lire ce fichier : " + err.message });
@@ -2236,11 +2300,12 @@ function ImportExcelSheet({ data, onClose, onImport }) {
 
   const monthCount = preview ? new Set(preview.parsed.transactions.map((t) => t.date.slice(0, 7))).size : 0;
   const incomeMonthCount = preview ? Object.keys(preview.parsed.monthlyIncome).length : 0;
+  const savingsCount = preview ? (preview.parsed.savingsEntries || []).length : 0;
 
   return (
     <Sheet title="Importer depuis Excel" onClose={onClose}>
       <div className="empty-hint">
-        Prend en charge deux modèles : « Budget mensuel et annuel » (onglets Jan à Déc, avec un tableau « Suivi des dépenses » daté) et « Budget mensuel personnel » (feuilles « Budget mensuel … », sans dates précises — chaque feuille est alors datée au 1er du mois trouvé dans son nom, ou du mois en cours si aucun mois n'y est identifiable). Le format est détecté automatiquement.
+        Prend en charge deux modèles : « Budget mensuel et annuel » (onglets Jan à Déc, avec un tableau « Suivi des dépenses » daté, et l'épargne du tableau « Épargne et investissement ») et « Budget mensuel personnel » (feuilles « Budget mensuel … », sans dates précises — chaque feuille est alors datée au 1er du mois trouvé dans son nom, ou du mois en cours si aucun mois n'y est identifiable). Le format est détecté automatiquement.
       </div>
       <button className="ghost-btn" onClick={() => fileRef.current?.click()}><Upload size={15} /> Choisir un fichier .xlsx</button>
       <input ref={fileRef} type="file" accept=".xlsx" style={{ display: "none" }} onChange={handleFile} />
@@ -2251,6 +2316,7 @@ function ImportExcelSheet({ data, onClose, onImport }) {
             {preview.parsed.transactions.length} mouvement(s) trouvé(s) sur {monthCount} mois (année {preview.parsed.year}).
             {preview.newCatCount > 0 && ` ${preview.newCatCount} nouvelle(s) catégorie(s) seront créées.`}
             {incomeMonthCount > 0 && ` Revenu détecté sur ${incomeMonthCount} mois.`}
+            {savingsCount > 0 && ` ${savingsCount} mouvement(s) d'épargne trouvé(s)${preview.newProjectCount > 0 ? ` (${preview.newProjectCount} nouveau(x) projet(s) créé(s))` : ""}.`}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="ghost-btn small" style={{ flex: 1 }} onClick={() => setPreview(null)}>Annuler</button>
@@ -2448,6 +2514,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
   };
   const addProject = useCallback((p) => { if (!data) return; persist({ ...data, savingsProjects: [...data.savingsProjects, p] }); }, [data, persist]);
   const removeProject = useCallback((id) => { if (!data) return; persist({ ...data, savingsProjects: data.savingsProjects.filter((p) => p.id !== id) }); }, [data, persist]);
+  const updateProjectTarget = useCallback((id, target) => { if (!data) return; persist({ ...data, savingsProjects: data.savingsProjects.map((p) => p.id === id ? { ...p, target } : p) }); }, [data, persist]);
   const addExpenseGlobal = useCallback((exp) => {
     if (!data) return;
     const monthKey = exp.date.slice(0, 7);
@@ -2533,7 +2600,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
       <main className="app-main">
         {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addExpenseGlobal={addExpenseGlobal} updateExpenseGlobal={updateExpenseGlobal} addContribution={addContribution} removeTransfer={removeTransfer} updateTransfer={updateTransfer} onNeedProject={() => setTab("epargne")} />}
         {tab === "enveloppes" && <EnvelopesTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} catActions={catActions} />}
-        {tab === "epargne" && <SavingsTab projects={data.savingsProjects} addProject={addProject} addContribution={addContribution} removeProject={removeProject} removeTransfer={removeTransfer} mKey={mKey} />}
+        {tab === "epargne" && <SavingsTab projects={data.savingsProjects} addProject={addProject} addContribution={addContribution} removeProject={removeProject} removeTransfer={removeTransfer} updateProjectTarget={updateProjectTarget} mKey={mKey} />}
         {tab === "recap" && <RecapTab data={data} categories={data.categories} year={year} setYear={setYear} />}
       </main>
       <nav className="tab-bar">
