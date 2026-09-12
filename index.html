@@ -562,7 +562,7 @@ function parseBudgetWorkbook(workbook) {
       if (variableName) categoryGroups[variableName] = "variable";
     }
 
-    for (let row = 76; row <= 236; row++) {
+    for (let row = 76; row <= 1000; row++) {
       const dateISO = xlCellDateISO(ws, `B${row}`);
       const amount = xlCellNum(ws, `D${row}`);
       if (!dateISO || amount === null || amount === 0) continue;
@@ -1406,7 +1406,7 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
       </div>
 
       {GROUP_ORDER.map((groupKey) => {
-        const groupCats = categories.filter((c) => (c.group || "variable") === groupKey);
+        const groupCats = categories.filter((c) => (c.group || "variable") === groupKey).sort((a, b) => a.name.localeCompare(b.name, "fr"));
         return (
           <div className="card" key={groupKey}>
             <div className="card-title">{GROUP_LABELS[groupKey]}</div>
@@ -1904,12 +1904,11 @@ function ThemeSheet({ theme, onPick, onClose }) {
   );
 }
 
-function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, gh, updateGh, lastSync, encConfig, encKey, onEnableEncryption, onUnlockEncryption, onChangePassphrase, onDisableEncryption }) {
+function BackupSheet({ data, onClose, onImport, gh, updateGh, lastSync, encConfig, encKey, onEnableEncryption, onUnlockEncryption, onChangePassphrase, onDisableEncryption, onResetAll }) {
   const fileRef = useRef(null);
   const [importError, setImportError] = useState("");
   const [confirmImport, setConfirmImport] = useState(null);
-  const [showLockSetup, setShowLockSetup] = useState(false);
-  const [confirmDisableLock, setConfirmDisableLock] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const [ghStatus, setGhStatus] = useState(null);
   const [confirmOverwrite, setConfirmOverwrite] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -2071,29 +2070,22 @@ function BackupSheet({ data, onClose, onImport, pinHash, onSetPin, onClearPin, g
       <div style={{ height: 1, background: "var(--line)", margin: "4px 0" }} />
 
       <div>
-        <div className="field-label" style={{ marginBottom: 8 }}>Verrouillage</div>
-        {pinHash ? (
-          <>
-            <div className="hint-line" style={{ marginTop: 0 }}>Un code PIN protège l'ouverture de l'app sur cet appareil.</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="ghost-btn small" style={{ flex: 1, marginTop: 0 }} onClick={() => setShowLockSetup(true)}>Modifier le code</button>
-              <button className="danger-btn" style={{ flex: 1 }} onClick={() => setConfirmDisableLock(true)}>Désactiver</button>
+        <div className="field-label" style={{ marginBottom: 8 }}>Réinitialiser</div>
+        <div className="hint-line" style={{ marginTop: 0 }}>Efface toutes les données sur cet appareil (dépenses, enveloppes, épargne, catégories) et repart d'une app neuve.</div>
+        {confirmReset ? (
+          <div className="danger-zone">
+            <div className="danger-text">
+              Ceci supprime définitivement toutes tes données locales. Si la synchro automatique est active, la version vide sera aussi envoyée vers GitHub à la prochaine synchro, écrasant ta sauvegarde là-bas. Exporte d'abord si tu n'es pas sûr. Continuer ?
             </div>
-            {confirmDisableLock && (
-              <div className="danger-zone">
-                <div className="danger-text">Désactiver le verrouillage ? N'importe qui ouvrant l'app y aura accès.</div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button className="ghost-btn small" style={{ flex: 1 }} onClick={() => setConfirmDisableLock(false)}>Annuler</button>
-                  <button className="danger-btn" style={{ flex: 1 }} onClick={() => { onClearPin(); setConfirmDisableLock(false); }}>Confirmer</button>
-                </div>
-              </div>
-            )}
-          </>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="ghost-btn small" style={{ flex: 1 }} onClick={() => setConfirmReset(false)}>Annuler</button>
+              <button className="danger-btn" style={{ flex: 1 }} onClick={() => { onResetAll(); setConfirmReset(false); onClose(); }}>Tout réinitialiser</button>
+            </div>
+          </div>
         ) : (
-          <button className="ghost-btn" onClick={() => setShowLockSetup(true)}>Activer un code PIN</button>
+          <button className="danger-btn ghost" onClick={() => setConfirmReset(true)}><Trash2 size={14} /> Tout réinitialiser</button>
         )}
       </div>
-      {showLockSetup && <LockSetupSheet onClose={() => setShowLockSetup(false)} onSet={(hash) => { onSetPin(hash); setShowLockSetup(false); }} />}
     </Sheet>
   );
 }
@@ -2584,6 +2576,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
     });
   }, [data, persist]);
   const handleImport = useCallback((imported) => { persist({ ...DEFAULT_DATA, ...imported }); }, [persist]);
+  const handleResetAll = useCallback(() => { persist({ ...DEFAULT_DATA }); }, [persist]);
 
   if (!ready || !data || !gh || !encConfig) return <div className="app-shell"><div className="loading">Chargement…</div></div>;
   if (encConfig.enabled && !encKey) return <EncryptionUnlockScreen onUnlock={handleUnlockEncryption} />;
@@ -2609,7 +2602,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
         <button className={`tab-btn ${tab === "epargne" ? "active" : ""}`} onClick={() => setTab("epargne")}><PiggyBank size={19} /><span>Épargne</span></button>
         <button className={`tab-btn ${tab === "recap" ? "active" : ""}`} onClick={() => setTab("recap")}><BarChart3 size={19} /><span>Récap</span></button>
       </nav>
-      {showBackup && <BackupSheet data={data} onClose={() => setShowBackup(false)} onImport={handleImport} pinHash={pinHash} onSetPin={onSetPin} onClearPin={onClearPin} gh={gh} updateGh={updateGh} lastSync={lastSync} encConfig={encConfig} encKey={encKey} onEnableEncryption={handleEnableEncryption} onUnlockEncryption={handleUnlockEncryption} onChangePassphrase={handleChangePassphrase} onDisableEncryption={handleDisableEncryption} />}
+      {showBackup && <BackupSheet data={data} onClose={() => setShowBackup(false)} onImport={handleImport} gh={gh} updateGh={updateGh} lastSync={lastSync} encConfig={encConfig} encKey={encKey} onEnableEncryption={handleEnableEncryption} onUnlockEncryption={handleUnlockEncryption} onChangePassphrase={handleChangePassphrase} onDisableEncryption={handleDisableEncryption} onResetAll={handleResetAll} />}
       {showTheme && <ThemeSheet theme={theme} onPick={pickTheme} onClose={() => setShowTheme(false)} />}
     </div>
   );
