@@ -1206,11 +1206,11 @@ function EditTransferSheet({ transfer, onClose, onSave, onDelete }) {
   );
 }
 
-function AddEntrySheet({ categories, projects, mKey, editing, onClose, onSaveExpense, onUpdateExpense, onDeleteExpense, onSaveContribution, onNeedProject }) {
+function AddEntrySheet({ categories, projects, mKey, editing, presetCategoryId, allowSaving = true, onClose, onSaveExpense, onUpdateExpense, onDeleteExpense, onSaveContribution, onNeedProject }) {
   const isEditing = !!editing;
   const [kind, setKind] = useState(editing?.kind || "expense");
   const [amount, setAmount] = useState(editing ? String(editing.amount) : "");
-  const [categoryId, setCategoryId] = useState(editing?.categoryId || categories[0]?.id || "");
+  const [categoryId, setCategoryId] = useState(editing?.categoryId || presetCategoryId || categories[0]?.id || "");
   const [subcategory, setSubcategory] = useState(editing?.subcategory || "");
   const [label, setLabel] = useState(editing?.label || "");
   const [date, setDate] = useState(editing?.date || todayISO());
@@ -1240,7 +1240,7 @@ function AddEntrySheet({ categories, projects, mKey, editing, onClose, onSaveExp
       <div className="segmented">
         <button className={kind === "expense" ? "seg-active" : ""} onClick={() => setKind("expense")}>Dépense</button>
         <button className={kind === "reimbursement" ? "seg-active" : ""} onClick={() => setKind("reimbursement")}>Remboursement</button>
-        {!isEditing && <button className={kind === "saving" ? "seg-active" : ""} onClick={() => setKind("saving")}>Vers épargne</button>}
+        {!isEditing && allowSaving && <button className={kind === "saving" ? "seg-active" : ""} onClick={() => setKind("saving")}>Vers épargne</button>}
       </div>
       <Field label="Montant"><input className="text-input" inputMode="decimal" placeholder="0,00 €" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
       {kind === "saving" && !isEditing ? (
@@ -1295,7 +1295,7 @@ function AddEntrySheet({ categories, projects, mKey, editing, onClose, onSaveExp
 /* Enveloppes tab                                                          */
 /* ---------------------------------------------------------------------- */
 
-function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions }) {
+function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions, addExpenseGlobal }) {
   const month = getMonth(data, mKey);
   const [editingCat, setEditingCat] = useState(null);
   const [draft, setDraft] = useState("");
@@ -1427,6 +1427,7 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
       {detailCat && (
         <CategoryDetailSheet
           category={categories.find((c) => c.id === detailCat)}
+          categories={categories}
           expenses={month.expenses.filter((e) => e.categoryId === detailCat)}
           onClose={() => setDetailCat(null)}
           onDeleteExpense={removeExpense}
@@ -1436,19 +1437,21 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
           onRenameCategory={(name) => catActions.rename(detailCat, name)}
           onRenameSub={(oldName, newName) => catActions.renameSub(detailCat, oldName, newName)}
           onChangeGroup={(g) => catActions.changeGroup(detailCat, g)}
+          onAddExpense={addExpenseGlobal}
         />
       )}
     </div>
   );
 }
 
-function CategoryDetailSheet({ category, expenses, onClose, onDeleteExpense, onDeleteCategory, onAddSub, onDeleteSub, onRenameCategory, onRenameSub, onChangeGroup }) {
+function CategoryDetailSheet({ category, categories, expenses, onClose, onDeleteExpense, onDeleteCategory, onAddSub, onDeleteSub, onRenameCategory, onRenameSub, onChangeGroup, onAddExpense }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [newSub, setNewSub] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(category?.name || "");
   const [editingSub, setEditingSub] = useState(null); // old subcategory name being renamed
   const [subDraft, setSubDraft] = useState("");
+  const [showAddExpense, setShowAddExpense] = useState(false);
   const sorted = [...expenses].sort(compareMovements);
   if (!category) return null;
 
@@ -1507,11 +1510,22 @@ function CategoryDetailSheet({ category, expenses, onClose, onDeleteExpense, onD
         </div>
       </div>
       <div>
-        <div className="field-label" style={{ marginBottom: 8 }}>Dépenses de ce mois</div>
+        <div className="field-label" style={{ marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>Dépenses de ce mois</span>
+          <button className="ghost-btn small" style={{ marginTop: 0, width: "auto", padding: "6px 12px" }} onClick={() => setShowAddExpense(true)}><Plus size={13} /> Ajouter</button>
+        </div>
         {sorted.length === 0 ? <div className="empty-hint">Aucune dépense dans cette catégorie ce mois-ci.</div> : (
           <ul className="expense-list">{sorted.map((e) => <MovementRow key={e.id} item={{ ...e, _type: "expense" }} cat={category} onDelete={onDeleteExpense} />)}</ul>
         )}
       </div>
+      {showAddExpense && (
+        <AddEntrySheet
+          categories={categories} projects={[]} allowSaving={false} presetCategoryId={category.id}
+          onClose={() => setShowAddExpense(false)}
+          onSaveExpense={(exp) => { onAddExpense(exp); setShowAddExpense(false); }}
+          onSaveContribution={() => {}} onNeedProject={() => {}}
+        />
+      )}
       <div className="danger-zone">
         {confirmDelete ? (
           <>
@@ -2592,7 +2606,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
       </header>
       <main className="app-main">
         {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addExpenseGlobal={addExpenseGlobal} updateExpenseGlobal={updateExpenseGlobal} addContribution={addContribution} removeTransfer={removeTransfer} updateTransfer={updateTransfer} onNeedProject={() => setTab("epargne")} />}
-        {tab === "enveloppes" && <EnvelopesTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} catActions={catActions} />}
+        {tab === "enveloppes" && <EnvelopesTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} catActions={catActions} addExpenseGlobal={addExpenseGlobal} />}
         {tab === "epargne" && <SavingsTab projects={data.savingsProjects} addProject={addProject} addContribution={addContribution} removeProject={removeProject} removeTransfer={removeTransfer} updateProjectTarget={updateProjectTarget} mKey={mKey} />}
         {tab === "recap" && <RecapTab data={data} categories={data.categories} year={year} setYear={setYear} />}
       </main>
