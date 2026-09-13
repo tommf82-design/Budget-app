@@ -1263,9 +1263,18 @@ function AddEntrySheet({ categories, projects, mKey, editing, presetCategoryId, 
       ) : (
         <>
           <Field label="Catégorie">
-            <div className="chip-row">
-              {categories.map((c) => <button key={c.id} className={`chip ${categoryId === c.id ? "chip-active" : ""}`} style={categoryId === c.id ? { background: c.color, borderColor: c.color } : {}} onClick={() => { setCategoryId(c.id); setSubcategory(""); }}>{c.name}</button>)}
-            </div>
+            {GROUP_ORDER.map((g) => {
+              const groupCats = categories.filter((c) => (c.group || "variable") === g).sort((a, b) => a.name.localeCompare(b.name, "fr"));
+              if (groupCats.length === 0) return null;
+              return (
+                <div key={g} style={{ marginBottom: 8 }}>
+                  <div className="field-label" style={{ marginBottom: 4 }}>{GROUP_LABELS[g]}</div>
+                  <div className="chip-row">
+                    {groupCats.map((c) => <button key={c.id} className={`chip ${categoryId === c.id ? "chip-active" : ""}`} style={categoryId === c.id ? { background: c.color, borderColor: c.color } : {}} onClick={() => { setCategoryId(c.id); setSubcategory(""); }}>{c.name}</button>)}
+                  </div>
+                </div>
+              );
+            })}
           </Field>
           {subs.length > 0 && (
             <Field label="Sous-catégorie">
