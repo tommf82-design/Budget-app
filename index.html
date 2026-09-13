@@ -1312,6 +1312,24 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
   const [detailCat, setDetailCat] = useState(null);
   const [editingSavings, setEditingSavings] = useState(false);
   const [savingsDraft, setSavingsDraft] = useState(String(month.savingsEnvelope || ""));
+  const [confirmCopy, setConfirmCopy] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
+
+  const prevKey = shiftMonth(mKey, -1);
+  const prevMonth = getMonth(data, prevKey);
+  const prevHasPlan = Object.keys(prevMonth.envelopes).length > 0 || (prevMonth.savingsEnvelope || 0) > 0;
+
+  function applyCopyPrev() {
+    updateMonth(mKey, { ...month, envelopes: { ...prevMonth.envelopes }, savingsEnvelope: prevMonth.savingsEnvelope || 0 });
+    setConfirmCopy(false);
+    setCopyStatus(`Prévisionnel de ${monthLabel(prevKey)} copié.`);
+    setTimeout(() => setCopyStatus(""), 4000);
+  }
+  function handleCopyClick() {
+    const currentHasPlan = Object.keys(month.envelopes).length > 0 || (month.savingsEnvelope || 0) > 0;
+    if (currentHasPlan) setConfirmCopy(true);
+    else applyCopyPrev();
+  }
 
   const spentByCategory = useMemo(() => {
     const map = {};
@@ -1384,6 +1402,22 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
         </div>
         <div className="hero-sub">{month.income ? `${eur.format(month.income - totalAllocated)} non alloué` : "Renseigne ton revenu dans l'onglet Budget"}</div>
       </div>
+
+      {prevHasPlan && !confirmCopy && (
+        <button className="ghost-btn" style={{ marginTop: 0 }} onClick={handleCopyClick}>
+          <Copy size={14} /> Reporter le prévisionnel de {monthLabel(prevKey)}
+        </button>
+      )}
+      {confirmCopy && (
+        <div className="card">
+          <div className="danger-text" style={{ color: "var(--ink-soft)" }}>Ce mois a déjà un prévisionnel renseigné. Le remplacer par celui de {monthLabel(prevKey)} ?</div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button className="ghost-btn small" style={{ flex: 1, marginTop: 0 }} onClick={() => setConfirmCopy(false)}>Annuler</button>
+            <button className="danger-btn" style={{ flex: 1 }} onClick={applyCopyPrev}>Remplacer</button>
+          </div>
+        </div>
+      )}
+      {copyStatus && <div className="sync-status success">{copyStatus}</div>}
 
       {chartData.length > 0 && (
         <div className="card">
