@@ -246,6 +246,8 @@ const Link2 = (p) => <Icon {...p}><rect x="2" y="8" width="9" height="8" rx="4" 
 const History = (p) => <Icon {...p}><path d="M3 12a9 9 0 1 0 2.6-6.3" /><polyline points="3 5 3 10 8 10" /><polyline points="12 8 12 12 15 14" /></Icon>;
 const Palette = (p) => <Icon {...p}><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.7-.9 1.2-1.8-.3-.5-.1-1.2.5-1.4.6-.2 1.3-.1 1.9.3.9.6 2.1.1 2.1-1A9 9 0 0 0 12 3z" /><circle cx="7.5" cy="10.5" r="1.1" fill={p.color || "currentColor"} stroke="none" /><circle cx="12" cy="7.2" r="1.1" fill={p.color || "currentColor"} stroke="none" /><circle cx="16.3" cy="10.5" r="1.1" fill={p.color || "currentColor"} stroke="none" /></Icon>;
 const Lock = (p) => <Icon {...p}><rect x="4" y="10.5" width="16" height="10" rx="2" /><path d="M7.5 10.5V7.2a4.5 4.5 0 0 1 9 0v3.3" /></Icon>;
+const ChevronUp = (p) => <Icon {...p}><polyline points="6 15 12 9 18 15" /></Icon>;
+const ChevronDown = (p) => <Icon {...p}><polyline points="6 9 12 15 18 9" /></Icon>;
 
 /* ---------------------------------------------------------------------- */
 /* Lightweight charts (no external charting library)                       */
@@ -1609,7 +1611,7 @@ function NewCategorySheet({ onClose, onSave, defaultGroup }) {
 
 function projectSaved(p) { return p.contributions.reduce((s, c) => s + (c.type === "withdrawal" ? -c.amount : c.amount), 0); }
 
-function SavingsTab({ projects, addProject, addContribution, removeProject, removeTransfer, updateProjectTarget, mKey }) {
+function SavingsTab({ projects, addProject, addContribution, removeProject, removeTransfer, updateProjectTarget, moveProject, mKey }) {
   const [showNew, setShowNew] = useState(false);
   const [movementFor, setMovementFor] = useState(null);
   const [detailProject, setDetailProject] = useState(null);
@@ -1626,14 +1628,18 @@ function SavingsTab({ projects, addProject, addContribution, removeProject, remo
         <div className="card"><div className="empty-hint">Aucun projet d'épargne pour l'instant. Crée-en un pour commencer à mettre de côté.</div></div>
       ) : (
         <div className="project-grid">
-          {projects.map((p) => {
+          {projects.map((p, i) => {
             const saved = projectSaved(p);
             const pct = p.target > 0 ? (saved / p.target) * 100 : 0;
             return (
               <div className="project-card" key={p.id} style={{ borderTopColor: p.color }} onClick={() => setDetailProject(p.id)}>
                 <div className="project-top">
                   <span className="project-name">{p.name}</span>
-                  <button className="icon-btn subtle" onClick={(e) => { e.stopPropagation(); removeProject(p.id); }} aria-label="Supprimer le projet"><Trash2 size={14} /></button>
+                  <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+                    <button className="icon-btn subtle" disabled={i === 0} style={i === 0 ? { opacity: 0.3 } : {}} onClick={(e) => { e.stopPropagation(); moveProject(p.id, "up"); }} aria-label="Monter"><ChevronUp size={14} /></button>
+                    <button className="icon-btn subtle" disabled={i === projects.length - 1} style={i === projects.length - 1 ? { opacity: 0.3 } : {}} onClick={(e) => { e.stopPropagation(); moveProject(p.id, "down"); }} aria-label="Descendre"><ChevronDown size={14} /></button>
+                    <button className="icon-btn subtle" onClick={(e) => { e.stopPropagation(); removeProject(p.id); }} aria-label="Supprimer le projet"><Trash2 size={14} /></button>
+                  </div>
                 </div>
                 <div className="project-amounts"><span className="project-saved">{eur.format(saved)}</span><span className="project-target"> / {eur.format(p.target)}</span></div>
                 <ProgressBar value={pct} tone="brass" />
@@ -2564,6 +2570,16 @@ function App({ pinHash, onSetPin, onClearPin }) {
   const addProject = useCallback((p) => { if (!data) return; persist({ ...data, savingsProjects: [...data.savingsProjects, p] }); }, [data, persist]);
   const removeProject = useCallback((id) => { if (!data) return; persist({ ...data, savingsProjects: data.savingsProjects.filter((p) => p.id !== id) }); }, [data, persist]);
   const updateProjectTarget = useCallback((id, target) => { if (!data) return; persist({ ...data, savingsProjects: data.savingsProjects.map((p) => p.id === id ? { ...p, target } : p) }); }, [data, persist]);
+  const moveProject = useCallback((id, direction) => {
+    if (!data) return;
+    const list = [...data.savingsProjects];
+    const idx = list.findIndex((p) => p.id === id);
+    if (idx === -1) return;
+    const swapWith = direction === "up" ? idx - 1 : idx + 1;
+    if (swapWith < 0 || swapWith >= list.length) return;
+    [list[idx], list[swapWith]] = [list[swapWith], list[idx]];
+    persist({ ...data, savingsProjects: list });
+  }, [data, persist]);
   const addExpenseGlobal = useCallback((exp) => {
     if (!data) return;
     const monthKey = exp.date.slice(0, 7);
@@ -2650,7 +2666,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
       <main className="app-main">
         {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addExpenseGlobal={addExpenseGlobal} updateExpenseGlobal={updateExpenseGlobal} addContribution={addContribution} removeTransfer={removeTransfer} updateTransfer={updateTransfer} onNeedProject={() => setTab("epargne")} />}
         {tab === "enveloppes" && <EnvelopesTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} catActions={catActions} addExpenseGlobal={addExpenseGlobal} />}
-        {tab === "epargne" && <SavingsTab projects={data.savingsProjects} addProject={addProject} addContribution={addContribution} removeProject={removeProject} removeTransfer={removeTransfer} updateProjectTarget={updateProjectTarget} mKey={mKey} />}
+        {tab === "epargne" && <SavingsTab projects={data.savingsProjects} addProject={addProject} addContribution={addContribution} removeProject={removeProject} removeTransfer={removeTransfer} updateProjectTarget={updateProjectTarget} moveProject={moveProject} mKey={mKey} />}
         {tab === "recap" && <RecapTab data={data} categories={data.categories} year={year} setYear={setYear} />}
       </main>
       <nav className="tab-bar">
