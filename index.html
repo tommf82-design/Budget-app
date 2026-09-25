@@ -104,6 +104,7 @@ body { font-family: 'Work Sans', sans-serif; color: var(--ink); }
 .project-card { background: var(--surface); border: 1px solid var(--line); border-top: 3px solid; border-radius: 10px; padding: 14px; cursor: pointer; }
 .project-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 4px; }
 .project-name { font-size: 13.5px; font-weight: 500; line-height: 1.3; flex: 1; min-width: 0; padding-top: 6px; }
+.project-note { font-size: 11px; color: var(--ink-soft); margin-top: -2px; }
 .drag-handle { cursor: grab; touch-action: none; margin-left: -6px; }
 .drag-handle:active { cursor: grabbing; }
 .project-card-dragging { opacity: 0.55; box-shadow: 0 8px 20px rgba(34,40,31,0.2); }
@@ -1615,7 +1616,7 @@ function NewCategorySheet({ onClose, onSave, defaultGroup }) {
 
 function projectSaved(p) { return p.contributions.reduce((s, c) => s + (c.type === "withdrawal" ? -c.amount : c.amount), 0); }
 
-function SavingsTab({ projects, addProject, addContribution, removeProject, removeTransfer, updateProjectTarget, moveProject, reorderProjects, mKey }) {
+function SavingsTab({ projects, addProject, addContribution, removeProject, removeTransfer, updateProjectTarget, updateProject, moveProject, reorderProjects, mKey }) {
   const [showNew, setShowNew] = useState(false);
   const [movementFor, setMovementFor] = useState(null);
   const [detailProject, setDetailProject] = useState(null);
@@ -1706,6 +1707,7 @@ function SavingsTab({ projects, addProject, addContribution, removeProject, remo
                       <button className="icon-btn subtle" onClick={(e) => { e.stopPropagation(); removeProject(p.id); }} aria-label="Supprimer le projet"><Trash2 size={14} /></button>
                     </div>
                   </div>
+                  {p.note && <div className="project-note">{p.note}</div>}
                   <div className="project-amounts"><span className="project-saved">{eur.format(saved)}</span><span className="project-target"> / {eur.format(p.target)}</span></div>
                   <ProgressBar value={pct} tone="brass" />
                   <div className="project-pct">{Math.round(pct)}% atteint</div>
@@ -1718,7 +1720,7 @@ function SavingsTab({ projects, addProject, addContribution, removeProject, remo
       )}
       <button className="fab" style={{ background: "var(--brass)" }} onClick={() => setShowNew(true)} aria-label="Nouveau projet"><Plus size={22} /></button>
       {showNew && <NewProjectSheet onClose={() => setShowNew(false)} onSave={(p) => { addProject(p); setShowNew(false); }} />}
-      {detailProject && <ProjectDetailSheet project={projects.find((p) => p.id === detailProject)} onClose={() => setDetailProject(null)} onAddMovement={() => setMovementFor(detailProject)} onDeleteMovement={(c) => removeTransfer(c.monthKey, c.id)} onUpdateTarget={(target) => updateProjectTarget(detailProject, target)} />}
+      {detailProject && <ProjectDetailSheet project={projects.find((p) => p.id === detailProject)} onClose={() => setDetailProject(null)} onAddMovement={() => setMovementFor(detailProject)} onDeleteMovement={(c) => removeTransfer(c.monthKey, c.id)} onUpdateTarget={(target) => updateProjectTarget(detailProject, target)} onUpdateProject={(patch) => updateProject(detailProject, patch)} />}
       {movementFor && <ContributionSheet project={projects.find((p) => p.id === movementFor)} mKey={mKey} onClose={() => setMovementFor(null)} onSave={(c) => { addContribution(movementFor, c); setMovementFor(null); }} />}
     </div>
   );
@@ -1727,12 +1729,14 @@ function SavingsTab({ projects, addProject, addContribution, removeProject, remo
 function NewProjectSheet({ onClose, onSave }) {
   const [name, setName] = useState("");
   const [target, setTarget] = useState("");
+  const [note, setNote] = useState("");
   const [color, setColor] = useState(PALETTE[2]);
-  function submit() { const t = parseFloat(target.replace(",", ".")); if (!name.trim() || !t || t <= 0) return; onSave({ id: uid(), name: name.trim(), target: t, color, contributions: [] }); }
+  function submit() { const t = parseFloat(target.replace(",", ".")); if (!name.trim() || !t || t <= 0) return; onSave({ id: uid(), name: name.trim(), target: t, note: note.trim(), color, contributions: [] }); }
   return (
     <Sheet title="Nouveau projet d'épargne" onClose={onClose}>
       <Field label="Nom du projet"><input className="text-input" autoFocus placeholder="Ex. Voyage au Japon" value={name} onChange={(e) => setName(e.target.value)} /></Field>
       <Field label="Objectif"><input className="text-input" inputMode="decimal" placeholder="0 €" value={target} onChange={(e) => setTarget(e.target.value)} /></Field>
+      <Field label="Note (optionnel)"><input className="text-input" placeholder="Ex. 150 €/mois" value={note} onChange={(e) => setNote(e.target.value)} /></Field>
       <Field label="Couleur"><div className="color-row">{PALETTE.map((c) => <button key={c} className={`color-swatch ${color === c ? "color-active" : ""}`} style={{ background: c }} onClick={() => setColor(c)} aria-label={c} />)}</div></Field>
       <button className="primary-btn" style={{ background: "var(--brass)" }} onClick={submit}>Créer le projet</button>
     </Sheet>
@@ -1767,9 +1771,13 @@ function ContributionSheet({ project, mKey, onClose, onSave }) {
   );
 }
 
-function ProjectDetailSheet({ project, onClose, onAddMovement, onDeleteMovement, onUpdateTarget }) {
+function ProjectDetailSheet({ project, onClose, onAddMovement, onDeleteMovement, onUpdateTarget, onUpdateProject }) {
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetDraft, setTargetDraft] = useState(project ? String(project.target || "") : "");
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(project?.name || "");
+  const [editingNote, setEditingNote] = useState(false);
+  const [noteDraft, setNoteDraft] = useState(project?.note || "");
   if (!project) return null;
   const saved = projectSaved(project);
   const pct = project.target > 0 ? (saved / project.target) * 100 : 0;
@@ -1779,8 +1787,39 @@ function ProjectDetailSheet({ project, onClose, onAddMovement, onDeleteMovement,
     onUpdateTarget(val);
     setEditingTarget(false);
   }
+  function saveName() {
+    if (nameDraft.trim()) onUpdateProject({ name: nameDraft.trim() });
+    setEditingName(false);
+  }
+  function saveNote() {
+    onUpdateProject({ note: noteDraft.trim() });
+    setEditingNote(false);
+  }
   return (
-    <Sheet title={project.name} onClose={onClose}>
+    <Sheet title={editingName ? "Renommer" : project.name} onClose={onClose}>
+      <div>
+        {editingName ? (
+          <div className="inline-edit">
+            <input className="text-input" autoFocus value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveName()} />
+            <button className="icon-btn" onClick={saveName}><Check size={16} /></button>
+          </div>
+        ) : (
+          <button className="ghost-btn small" style={{ marginTop: 0 }} onClick={() => { setNameDraft(project.name); setEditingName(true); }}><Pencil size={13} /> Renommer le projet</button>
+        )}
+      </div>
+      <div>
+        <div className="field-label" style={{ marginBottom: 6 }}>Note (ex. combien tu mets chaque mois)</div>
+        {editingNote ? (
+          <div className="inline-edit">
+            <input className="text-input" autoFocus placeholder="Ex. 150 €/mois" value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveNote()} />
+            <button className="icon-btn" onClick={saveNote}><Check size={16} /></button>
+          </div>
+        ) : (
+          <button className="ghost-btn small" style={{ marginTop: 0 }} onClick={() => { setNoteDraft(project.note || ""); setEditingNote(true); }}>
+            <Pencil size={13} /> {project.note ? project.note : "Ajouter une note"}
+          </button>
+        )}
+      </div>
       <div>
         <div className="project-amounts">
           <span className="project-saved">{eur.format(saved)}</span>
@@ -2636,6 +2675,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
   const addProject = useCallback((p) => { if (!data) return; persist({ ...data, savingsProjects: [...data.savingsProjects, p] }); }, [data, persist]);
   const removeProject = useCallback((id) => { if (!data) return; persist({ ...data, savingsProjects: data.savingsProjects.filter((p) => p.id !== id) }); }, [data, persist]);
   const updateProjectTarget = useCallback((id, target) => { if (!data) return; persist({ ...data, savingsProjects: data.savingsProjects.map((p) => p.id === id ? { ...p, target } : p) }); }, [data, persist]);
+  const updateProject = useCallback((id, patch) => { if (!data) return; persist({ ...data, savingsProjects: data.savingsProjects.map((p) => p.id === id ? { ...p, ...patch } : p) }); }, [data, persist]);
   const moveProject = useCallback((id, direction) => {
     if (!data) return;
     const list = [...data.savingsProjects];
@@ -2740,7 +2780,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
       <main className="app-main">
         {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addExpenseGlobal={addExpenseGlobal} updateExpenseGlobal={updateExpenseGlobal} addContribution={addContribution} removeTransfer={removeTransfer} updateTransfer={updateTransfer} onNeedProject={() => setTab("epargne")} />}
         {tab === "enveloppes" && <EnvelopesTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} catActions={catActions} addExpenseGlobal={addExpenseGlobal} />}
-        {tab === "epargne" && <SavingsTab projects={data.savingsProjects} addProject={addProject} addContribution={addContribution} removeProject={removeProject} removeTransfer={removeTransfer} updateProjectTarget={updateProjectTarget} moveProject={moveProject} reorderProjects={reorderProjects} mKey={mKey} />}
+        {tab === "epargne" && <SavingsTab projects={data.savingsProjects} addProject={addProject} addContribution={addContribution} removeProject={removeProject} removeTransfer={removeTransfer} updateProjectTarget={updateProjectTarget} updateProject={updateProject} moveProject={moveProject} reorderProjects={reorderProjects} mKey={mKey} />}
         {tab === "recap" && <RecapTab data={data} categories={data.categories} year={year} setYear={setYear} />}
       </main>
       <nav className="tab-bar">
