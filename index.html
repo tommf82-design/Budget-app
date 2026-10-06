@@ -105,9 +105,6 @@ body { font-family: 'Work Sans', sans-serif; color: var(--ink); }
 .project-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 4px; }
 .project-name { font-size: 13.5px; font-weight: 500; line-height: 1.3; flex: 1; min-width: 0; padding-top: 6px; }
 .project-note { font-size: 11px; color: var(--ink-soft); margin-top: -2px; }
-.drag-handle { cursor: grab; touch-action: none; margin-left: -6px; }
-.drag-handle:active { cursor: grabbing; }
-.project-card-dragging { opacity: 0.55; box-shadow: 0 8px 20px rgba(34,40,31,0.2); }
 .project-amounts { margin: 8px 0 6px; }
 .project-saved { font-family: 'Fraunces', serif; font-size: 17px; font-weight: 500; }
 .project-target { font-size: 12px; color: var(--ink-soft); }
@@ -1616,57 +1613,11 @@ function NewCategorySheet({ onClose, onSave, defaultGroup }) {
 
 function projectSaved(p) { return p.contributions.reduce((s, c) => s + (c.type === "withdrawal" ? -c.amount : c.amount), 0); }
 
-function SavingsTab({ projects, addProject, addContribution, removeProject, removeTransfer, updateProjectTarget, updateProject, moveProject, reorderProjects, mKey }) {
+function SavingsTab({ projects, addProject, addContribution, removeProject, removeTransfer, updateProjectTarget, updateProject, moveProject, mKey }) {
   const [showNew, setShowNew] = useState(false);
   const [movementFor, setMovementFor] = useState(null);
   const [detailProject, setDetailProject] = useState(null);
-  const [order, setOrder] = useState(projects.map((p) => p.id));
-  const [draggingId, setDraggingId] = useState(null);
-  const dragInfo = useRef({ id: null, moved: false });
   const totalSaved = projects.reduce((s, p) => s + projectSaved(p), 0);
-
-  useEffect(() => {
-    setOrder((prev) => {
-      const stillValid = prev.filter((id) => projects.some((p) => p.id === id));
-      const missing = projects.map((p) => p.id).filter((id) => !stillValid.includes(id));
-      return [...stillValid, ...missing];
-    });
-  }, [projects]);
-
-  const orderedProjects = order.map((id) => projects.find((p) => p.id === id)).filter(Boolean);
-
-  function handleGripDown(e, id) {
-    e.stopPropagation();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    dragInfo.current = { id, moved: false };
-    setDraggingId(id);
-  }
-  function handleGripMove(e) {
-    if (!dragInfo.current.id) return;
-    dragInfo.current.moved = true;
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    const cardEl = el && el.closest("[data-project-id]");
-    if (cardEl) {
-      const overId = cardEl.getAttribute("data-project-id");
-      if (overId && overId !== dragInfo.current.id) {
-        setOrder((prev) => {
-          const next = [...prev];
-          const from = next.indexOf(dragInfo.current.id);
-          const to = next.indexOf(overId);
-          if (from === -1 || to === -1) return prev;
-          next.splice(from, 1);
-          next.splice(to, 0, dragInfo.current.id);
-          return next;
-        });
-      }
-    }
-  }
-  function handleGripUp(e) {
-    e.stopPropagation();
-    if (dragInfo.current.id && dragInfo.current.moved) reorderProjects(order);
-    dragInfo.current = { id: null, moved: false };
-    setDraggingId(null);
-  }
 
   return (
     <div className="tab-panel">
@@ -1675,48 +1626,32 @@ function SavingsTab({ projects, addProject, addContribution, removeProject, remo
         <div className="hero-value" style={{ color: "var(--brass)" }}>{eur.format(totalSaved)}</div>
         <div className="hero-sub">{projects.length} projet{projects.length !== 1 ? "s" : ""}</div>
       </div>
-      {orderedProjects.length === 0 ? (
+      {projects.length === 0 ? (
         <div className="card"><div className="empty-hint">Aucun projet d'épargne pour l'instant. Crée-en un pour commencer à mettre de côté.</div></div>
       ) : (
-        <>
-          <div className="hint-line" style={{ marginTop: -6 }}>Maintiens l'icône ⠿ et fais glisser pour réordonner, ou utilise les flèches.</div>
-          <div className="project-grid">
-            {orderedProjects.map((p, i) => {
-              const saved = projectSaved(p);
-              const pct = p.target > 0 ? (saved / p.target) * 100 : 0;
-              return (
-                <div
-                  className={`project-card ${draggingId === p.id ? "project-card-dragging" : ""}`}
-                  key={p.id} data-project-id={p.id}
-                  style={{ borderTopColor: p.color }}
-                  onClick={() => setDetailProject(p.id)}
-                >
-                  <div className="project-top">
-                    <button
-                      className="icon-btn subtle drag-handle"
-                      onPointerDown={(e) => handleGripDown(e, p.id)}
-                      onPointerMove={handleGripMove}
-                      onPointerUp={handleGripUp}
-                      onClick={(e) => e.stopPropagation()}
-                      aria-label="Réordonner"
-                    ><GripIcon size={15} /></button>
-                    <span className="project-name">{p.name}</span>
-                    <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
-                      <button className="icon-btn subtle" disabled={i === 0} style={i === 0 ? { opacity: 0.3 } : {}} onClick={(e) => { e.stopPropagation(); moveProject(p.id, "up"); }} aria-label="Monter"><ChevronUp size={14} /></button>
-                      <button className="icon-btn subtle" disabled={i === orderedProjects.length - 1} style={i === orderedProjects.length - 1 ? { opacity: 0.3 } : {}} onClick={(e) => { e.stopPropagation(); moveProject(p.id, "down"); }} aria-label="Descendre"><ChevronDown size={14} /></button>
-                      <button className="icon-btn subtle" onClick={(e) => { e.stopPropagation(); removeProject(p.id); }} aria-label="Supprimer le projet"><Trash2 size={14} /></button>
-                    </div>
+        <div className="project-grid">
+          {projects.map((p, i) => {
+            const saved = projectSaved(p);
+            const pct = p.target > 0 ? (saved / p.target) * 100 : 0;
+            return (
+              <div className="project-card" key={p.id} style={{ borderTopColor: p.color }} onClick={() => setDetailProject(p.id)}>
+                <div className="project-top">
+                  <span className="project-name">{p.name}</span>
+                  <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+                    <button className="icon-btn subtle" disabled={i === 0} style={i === 0 ? { opacity: 0.3 } : {}} onClick={(e) => { e.stopPropagation(); moveProject(p.id, "up"); }} aria-label="Monter"><ChevronUp size={14} /></button>
+                    <button className="icon-btn subtle" disabled={i === projects.length - 1} style={i === projects.length - 1 ? { opacity: 0.3 } : {}} onClick={(e) => { e.stopPropagation(); moveProject(p.id, "down"); }} aria-label="Descendre"><ChevronDown size={14} /></button>
+                    <button className="icon-btn subtle" onClick={(e) => { e.stopPropagation(); removeProject(p.id); }} aria-label="Supprimer le projet"><Trash2 size={14} /></button>
                   </div>
-                  {p.note && <div className="project-note">{p.note}</div>}
-                  <div className="project-amounts"><span className="project-saved">{eur.format(saved)}</span><span className="project-target"> / {eur.format(p.target)}</span></div>
-                  <ProgressBar value={pct} tone="brass" />
-                  <div className="project-pct">{Math.round(pct)}% atteint</div>
-                  <button className="ghost-btn small" onClick={(e) => { e.stopPropagation(); setMovementFor(p.id); }}><Plus size={13} /> Mouvement</button>
                 </div>
-              );
-            })}
-          </div>
-        </>
+                {p.note && <div className="project-note">{p.note}</div>}
+                <div className="project-amounts"><span className="project-saved">{eur.format(saved)}</span><span className="project-target"> / {eur.format(p.target)}</span></div>
+                <ProgressBar value={pct} tone="brass" />
+                <div className="project-pct">{Math.round(pct)}% atteint</div>
+                <button className="ghost-btn small" onClick={(e) => { e.stopPropagation(); setMovementFor(p.id); }}><Plus size={13} /> Mouvement</button>
+              </div>
+            );
+          })}
+        </div>
       )}
       <button className="fab" style={{ background: "var(--brass)" }} onClick={() => setShowNew(true)} aria-label="Nouveau projet"><Plus size={22} /></button>
       {showNew && <NewProjectSheet onClose={() => setShowNew(false)} onSave={(p) => { addProject(p); setShowNew(false); }} />}
@@ -2780,7 +2715,7 @@ function App({ pinHash, onSetPin, onClearPin }) {
       <main className="app-main">
         {tab === "budget" && <BudgetTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} addExpenseGlobal={addExpenseGlobal} updateExpenseGlobal={updateExpenseGlobal} addContribution={addContribution} removeTransfer={removeTransfer} updateTransfer={updateTransfer} onNeedProject={() => setTab("epargne")} />}
         {tab === "enveloppes" && <EnvelopesTab data={data} updateMonth={updateMonth} mKey={mKey} setMKey={setMKey} categories={data.categories} catActions={catActions} addExpenseGlobal={addExpenseGlobal} />}
-        {tab === "epargne" && <SavingsTab projects={data.savingsProjects} addProject={addProject} addContribution={addContribution} removeProject={removeProject} removeTransfer={removeTransfer} updateProjectTarget={updateProjectTarget} updateProject={updateProject} moveProject={moveProject} reorderProjects={reorderProjects} mKey={mKey} />}
+        {tab === "epargne" && <SavingsTab projects={data.savingsProjects} addProject={addProject} addContribution={addContribution} removeProject={removeProject} removeTransfer={removeTransfer} updateProjectTarget={updateProjectTarget} updateProject={updateProject} moveProject={moveProject} mKey={mKey} />}
         {tab === "recap" && <RecapTab data={data} categories={data.categories} year={year} setYear={setYear} />}
       </main>
       <nav className="tab-bar">
