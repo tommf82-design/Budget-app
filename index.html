@@ -1363,7 +1363,12 @@ function EnvelopesTab({ data, updateMonth, mKey, setMKey, categories, catActions
   const savingsPct = savingsEnvelope > 0 ? (netSavings / savingsEnvelope) * 100 : (netSavings > 0 ? 200 : 0);
   const savingsAhead = savingsEnvelope > 0 && netSavings >= savingsEnvelope;
 
-  const chartData = categories.map((c) => ({ name: c.name, "Alloué": month.envelopes[c.id] || 0, "Dépensé": Math.max(0, spentByCategory[c.id] || 0) })).filter((d) => d["Alloué"] > 0 || d["Dépensé"] > 0);
+  const chartData = GROUP_ORDER.map((g) => {
+    const groupCats = categories.filter((c) => (c.group || "variable") === g);
+    const alloc = groupCats.reduce((s, c) => s + (month.envelopes[c.id] || 0), 0);
+    const spent = groupCats.reduce((s, c) => s + Math.max(0, spentByCategory[c.id] || 0), 0);
+    return { name: GROUP_LABELS[g], "Alloué": alloc, "Dépensé": spent };
+  }).filter((d) => d["Alloué"] > 0 || d["Dépensé"] > 0);
   if (savingsEnvelope > 0 || netSavings > 0) chartData.push({ name: "Épargne", "Alloué": savingsEnvelope, "Dépensé": Math.max(0, netSavings) });
 
   function renderEnvelopeRow(c) {
